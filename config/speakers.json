@@ -1,0 +1,13 @@
+{
+  "Speaker_01": {
+    "name": "Primary User",
+    "role": "Owner",
+    "notes": "Default placeholder mapping; customize as needed."
+  },
+  "Speaker_02": {
+    "name": "Secondary Participant",
+    "role": "Guest",
+    "notes": "Example entry."
+  }
+}
+

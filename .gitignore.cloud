@@ -1,0 +1,11 @@
+# AWS credentials (if stored in project - not recommended)
+.aws/
+*.pem
+*.key
+
+# Terraform
+infrastructure/.terraform/
+infrastructure/*.tfstate
+infrastructure/*.tfstate.*
+infrastructure/terraform.tfvars
+infrastructure/.terraform.lock.hcl
