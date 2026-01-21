@@ -95,6 +95,7 @@ resource "aws_s3_bucket_public_access_block" "videos" {
 }
 
 # S3 Bucket notification configuration (triggers SQS on upload)
+# Note: S3 notifications require SQS queue policy to allow S3 to send messages
 resource "aws_s3_bucket_notification" "video_upload_trigger" {
   bucket = aws_s3_bucket.videos.id
 
@@ -127,7 +128,11 @@ resource "aws_s3_bucket_notification" "video_upload_trigger" {
     filter_suffix = ".mkv"
   }
 
-  depends_on = [aws_sqs_queue.video_processing]
+  # Ensure SQS queue and policy are created before notification
+  depends_on = [
+    aws_sqs_queue.video_processing,
+    aws_sqs_queue_policy.video_processing
+  ]
 }
 
 # SQS Queue for video processing jobs
@@ -251,6 +256,25 @@ resource "aws_iam_role_policy" "lambda_processor" {
           aws_sqs_queue.video_processing.arn,
           aws_sqs_queue.video_processing_dlq.arn
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+        Resource = [
+          aws_ecr_repository.lambda_processor.arn,
+          aws_ecr_repository.lambda_api.arn
+        ]
       }
     ]
   })
@@ -311,7 +335,7 @@ resource "aws_security_group" "rds" {
 resource "aws_db_instance" "main" {
   identifier        = "${var.project_name}-db-${var.environment}"
   engine            = "postgres"
-  engine_version    = "15.4"
+  # engine_version - Let AWS use the default/latest supported version
   instance_class    = var.db_instance_class
   allocated_storage = var.db_allocated_storage
   storage_type      = "gp3"

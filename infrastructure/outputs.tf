@@ -55,23 +55,44 @@ output "aws_account_id" {
 }
 
 # SQS Queue URLs
-output "sqs_queue_url" {
-  description = "SQS queue URL for video processing"
-  value       = aws_sqs_queue.video_processing.id
+# API Deployment (Stage 3.3.6) - Lambda + API Gateway
+output "lambda_api_function_name" {
+  description = "Lambda API function name"
+  value       = aws_lambda_function.api.function_name
 }
 
-output "sqs_dlq_url" {
-  description = "SQS dead-letter queue URL"
-  value       = aws_sqs_queue.video_processing_dlq.id
+output "lambda_api_function_arn" {
+  description = "Lambda API function ARN"
+  value       = aws_lambda_function.api.arn
 }
 
-# Lambda Function
-output "lambda_function_name" {
-  description = "Lambda function name for video processing"
+output "api_gateway_rest_api_id" {
+  description = "API Gateway REST API ID"
+  value       = aws_api_gateway_rest_api.api.id
+}
+
+output "api_gateway_url" {
+  description = "API Gateway invoke URL"
+  value       = "https://${aws_api_gateway_rest_api.api.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}"
+}
+
+output "api_health_check_url" {
+  description = "API health check URL"
+  value       = "https://${aws_api_gateway_rest_api.api.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}/health"
+}
+
+output "api_docs_url" {
+  description = "API documentation URL"
+  value       = "https://${aws_api_gateway_rest_api.api.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}/docs"
+}
+
+# ECR Repository
+output "ecr_repository_url" {
+  description = "ECR repository URL for Lambda processor image"
+  value       = aws_ecr_repository.lambda_processor.repository_url
+}
+
+output "lambda_processor_function_name" {
+  description = "Lambda processor function name"
   value       = aws_lambda_function.video_processor.function_name
-}
-
-output "lambda_function_arn" {
-  description = "Lambda function ARN"
-  value       = aws_lambda_function.video_processor.arn
 }

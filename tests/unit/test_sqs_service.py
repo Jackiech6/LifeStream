@@ -5,14 +5,14 @@ import json
 import pytest
 from datetime import datetime
 
-from src.queue.sqs_service import SQSService, ProcessingJob, JobStatus
+from src.messaging.sqs_service import SQSService, ProcessingJob, JobStatus
 from config.settings import Settings
 
 
 @pytest.fixture
 def mock_sqs_client():
     """Create a mocked SQS client."""
-    with patch("src.queue.sqs_service.boto3") as mock_boto3:
+    with patch("src.messaging.sqs_service.boto3") as mock_boto3:
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
         yield mock_client

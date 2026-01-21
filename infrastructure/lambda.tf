@@ -1,30 +1,29 @@
-# Lambda Function for Video Processing
-# Note: lambda_package.zip must be created before applying
-# Use: scripts/build_lambda_package.sh
+# Lambda Function for Video Processing (Container Image)
+# Uses ECR container image instead of zip package to support large dependencies
 resource "aws_lambda_function" "video_processor" {
-  filename         = "${path.module}/lambda_package.zip"
-  function_name    = "${var.project_name}-video-processor-${var.environment}"
-  role             = aws_iam_role.lambda_processor.arn
-  handler          = "lambda_handler.lambda_handler"
-  runtime          = "python3.11"
-  timeout          = var.lambda_timeout
-  memory_size      = var.lambda_memory_size
-  source_code_hash = fileexists("${path.module}/lambda_package.zip") ? filebase64sha256("${path.module}/lambda_package.zip") : null
+  function_name = "${var.project_name}-video-processor-${var.environment}"
+  role          = aws_iam_role.lambda_processor.arn
+  package_type  = "Image"
+  # Use ECR image URI with latest tag
+  image_uri     = "${aws_ecr_repository.lambda_processor.repository_url}:latest"
+  
+  timeout     = var.lambda_timeout
+  memory_size = var.lambda_memory_size
 
   # Environment variables
   environment {
     variables = {
-      OPENAI_API_KEY           = var.openai_api_key
-      HUGGINGFACE_TOKEN        = var.huggingface_token
-      PINECONE_API_KEY         = var.pinecone_api_key != "" ? var.pinecone_api_key : ""
-      AWS_S3_BUCKET_NAME       = aws_s3_bucket.videos.id
-      AWS_SQS_QUEUE_URL        = aws_sqs_queue.video_processing.id
-      AWS_SQS_DLQ_URL          = aws_sqs_queue.video_processing_dlq.id
-      AWS_REGION               = var.aws_region
-      PINECONE_INDEX_NAME      = var.pinecone_index_name != "" ? var.pinecone_index_name : "lifestream-dev"
-      PINECONE_ENVIRONMENT     = var.pinecone_environment != "" ? var.pinecone_environment : "us-east-1"
-      LLM_MODEL                = "gpt-4o"
-      EMBEDDING_MODEL_NAME     = "text-embedding-3-small"
+      OPENAI_API_KEY        = var.openai_api_key
+      HUGGINGFACE_TOKEN     = var.huggingface_token
+      PINECONE_API_KEY      = var.pinecone_api_key != "" ? var.pinecone_api_key : ""
+      AWS_S3_BUCKET_NAME    = aws_s3_bucket.videos.id
+      AWS_SQS_QUEUE_URL     = aws_sqs_queue.video_processing.id
+      AWS_SQS_DLQ_URL       = aws_sqs_queue.video_processing_dlq.id
+      # AWS_REGION is automatically provided by Lambda - do not set it manually
+      PINECONE_INDEX_NAME   = var.pinecone_index_name != "" ? var.pinecone_index_name : "lifestream-dev"
+      PINECONE_ENVIRONMENT  = var.pinecone_environment != "" ? var.pinecone_environment : "us-east-1"
+      LLM_MODEL             = "gpt-4o"
+      EMBEDDING_MODEL_NAME  = "text-embedding-3-small"
     }
   }
 
@@ -38,8 +37,9 @@ resource "aws_lambda_function" "video_processor" {
     Name = "${var.project_name}-video-processor-${var.environment}"
   }
 
-  # Note: lambda_package.zip must be created before applying
-  # Use: zip -r lambda_package.zip src/ config/ -x "*.pyc" "__pycache__/*"
+  depends_on = [
+    aws_ecr_repository.lambda_processor
+  ]
 }
 
 # Lambda Event Source Mapping (SQS trigger)

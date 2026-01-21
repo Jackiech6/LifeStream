@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from src.workers.lambda_handler import lambda_handler, process_video_from_s3
-from src.queue.sqs_service import ProcessingJob, JobStatus
+from src.messaging.sqs_service import ProcessingJob, JobStatus
 from config.settings import Settings
 
 

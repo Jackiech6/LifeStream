@@ -115,3 +115,39 @@ variable "lambda_memory" {
   type        = number
   default     = 3008
 }
+
+# API Deployment (Stage 3.3.6) - Lambda + API Gateway
+# Note: Lambda auto-scales automatically, no need for min/max capacity variables
+
+variable "openai_api_key_secret_arn" {
+  description = "ARN of Secrets Manager secret for OpenAI API key (optional, can use env var instead)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "pinecone_api_key_secret_arn" {
+  description = "ARN of Secrets Manager secret for Pinecone API key (optional, can use env var instead)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "huggingface_token_secret_arn" {
+  description = "ARN of Secrets Manager secret for HuggingFace token (optional, can use env var instead)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "api_lambda_memory" {
+  description = "Lambda API function memory in MB"
+  type        = number
+  default     = 512
+}
+
+variable "api_lambda_timeout" {
+  description = "Lambda API function timeout in seconds"
+  type        = number
+  default     = 30
+}

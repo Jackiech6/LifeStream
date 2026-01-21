@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from src.storage.s3_service import S3Service
-from src.queue.sqs_service import SQSService, ProcessingJob, JobStatus
+from src.messaging.sqs_service import SQSService, ProcessingJob, JobStatus
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)

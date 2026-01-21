@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     chunk_size_seconds: int = 300  # 5 minutes
     
     # Paths (Mac-friendly, uses home directory expansion)
+    # For Lambda, use /tmp (read-only file system except /tmp)
     output_dir: str = "~/LifeStream/output"  # Will be expanded to absolute path
     temp_dir: str = "~/LifeStream/temp"      # Will be expanded to absolute path
     # Speaker registry JSON file used in Stage 1/2 for nicer names in summaries
@@ -72,14 +73,30 @@ class Settings(BaseSettings):
         
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Expand user paths on Mac
-        self.output_dir = str(Path(self.output_dir).expanduser())
-        self.temp_dir = str(Path(self.temp_dir).expanduser())
-        # Create directories if they don't exist
-        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.temp_dir).mkdir(parents=True, exist_ok=True)
+        # Lambda environment detection: if AWS_LAMBDA_FUNCTION_NAME is set, use /tmp
+        import os
+        if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+            # Lambda environment: use /tmp (only writable location)
+            self.output_dir = "/tmp/lifestream/output"
+            self.temp_dir = "/tmp/lifestream/temp"
+        else:
+            # Local development: expand user paths
+            self.output_dir = str(Path(self.output_dir).expanduser())
+            self.temp_dir = str(Path(self.temp_dir).expanduser())
+        
+        # Create directories if they don't exist (skip in Lambda if path not writable)
+        try:
+            Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+            Path(self.temp_dir).mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError):
+            # Lambda: directories will be created per-job in /tmp
+            pass
         
         # Create log file directory if specified
         if self.log_file:
-            log_path = Path(self.log_file).expanduser()
-            log_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                log_path = Path(self.log_file).expanduser()
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, PermissionError):
+                # Lambda: skip log file creation if not writable
+                pass

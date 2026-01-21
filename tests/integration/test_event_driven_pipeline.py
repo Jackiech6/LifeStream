@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from src.queue.sqs_service import SQSService, ProcessingJob, JobStatus
+from src.messaging.sqs_service import SQSService, ProcessingJob, JobStatus
 from src.services.video_service import VideoService
 from src.storage.s3_service import S3Service
 from config.settings import Settings
@@ -70,7 +70,7 @@ def test_video_service_generate_presigned_url(settings_with_aws):
 
 def test_sqs_service_integration_flow(settings_with_aws):
     """Test complete SQS flow: send, receive, delete."""
-    with patch("src.queue.sqs_service.boto3") as mock_boto3:
+    with patch("src.messaging.sqs_service.boto3") as mock_boto3:
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
 

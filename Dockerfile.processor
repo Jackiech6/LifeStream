@@ -1,0 +1,89 @@
+# Dockerfile for Video Processor Lambda Function
+# Uses AWS Lambda Python base image for compatibility
+
+FROM public.ecr.aws/lambda/python:3.11
+
+# Install system dependencies required for video/audio processing
+# Install build tools for compiling Python packages
+RUN yum update -y && \
+    yum install -y \
+    gcc \
+    gcc-c++ \
+    make \
+    python3-devel \
+    && yum clean all \
+    && rm -rf /var/cache/yum || true
+
+# Copy requirements first for better layer caching
+COPY requirements.txt ${LAMBDA_TASK_ROOT}/
+
+# Install Python dependencies
+# Note: Lambda base image has /var/task as the working directory
+# Use set -e to fail on any error
+RUN set -e && \
+    pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install core dependencies with pinned versions (pre-built wheels only)
+# Pin versions that have pre-built wheels for Lambda's architecture
+RUN set -e && \
+    pip install --no-cache-dir \
+    "pydantic==2.5.3" \
+    "pydantic-settings==2.1.0" \
+    "python-dotenv==1.0.0" \
+    "boto3==1.34.0" \
+    "numpy==1.24.3" \
+    "Pillow==10.2.0" \
+    "click==8.1.7" \
+    "tqdm==4.66.1"
+
+# Install LLM and API dependencies
+RUN set -e && \
+    pip install --no-cache-dir \
+    "openai==1.12.0" \
+    "pinecone==5.0.1"
+
+# Install media processing dependencies (skip problematic ones)
+# Note: FFmpeg, PyTorch, Whisper, etc. are large - install selectively
+RUN set -e && \
+    pip install --no-cache-dir \
+    "opencv-python==4.9.0.80" \
+    "scenedetect==0.6.2" \
+    "librosa==0.10.2" \
+    "torch==2.1.2" --index-url https://download.pytorch.org/whl/cpu || \
+    echo "Warning: torch installation may have issues"
+
+# Install pyannote.audio (optional - may fail due to dependencies)
+RUN set -e && \
+    pip install --no-cache-dir "pyannote.audio==3.1.1" || \
+    echo "Warning: pyannote.audio not installed"
+
+# Install OpenAI Whisper
+RUN set -e && \
+    pip install --no-cache-dir "openai-whisper==20231117" || \
+    echo "Warning: whisper not installed"
+
+# Verify critical dependencies are installed
+RUN set -e && \
+    python -c "import pydantic; print('pydantic OK')" && \
+    python -c "import boto3; print('boto3 OK')" && \
+    python -c "import numpy; print('numpy OK')" && \
+    python -c "import openai; print('openai OK')" && \
+    python -c "import pinecone; print('pinecone OK')" && \
+    echo "✅ Critical dependencies verified successfully"
+
+# Copy application code
+COPY src/ ${LAMBDA_TASK_ROOT}/src/
+COPY config/ ${LAMBDA_TASK_ROOT}/config/
+
+# Create lambda handler entry point
+# The handler function is in src/workers/lambda_handler.py
+# AWS Lambda will look for lambda_function.lambda_handler by default
+COPY lambda_handler_processor.py ${LAMBDA_TASK_ROOT}/lambda_function.py
+
+# Verify processor import works (catches circular imports)
+RUN set -e && \
+    python -c "from lambda_function import lambda_handler; print('processor import ok')" && \
+    echo "✅ Processor import verified successfully"
+
+# Set the CMD to your handler (AWS Lambda base image expects this format)
+CMD [ "lambda_function.lambda_handler" ]

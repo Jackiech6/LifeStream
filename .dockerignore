@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+
+# Output and temp directories
+output/
+temp/
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Documentation
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+
+# Infrastructure
+infrastructure/
+terraform.tfstate*
+*.tfvars
+
+# Tests
+tests/
+pytest.ini
+
+# Scripts
+scripts/
+
+# Build artifacts
+*.log
+*.tmp

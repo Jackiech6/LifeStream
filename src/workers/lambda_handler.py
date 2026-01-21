@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 
 from src.main import process_video
 from src.storage.s3_service import S3Service
-from src.queue.sqs_service import SQSService, ProcessingJob, JobStatus
+# Import everything lazily to avoid circular imports
 from src.memory.index_builder import index_daily_summary
 from src.memory.store_factory import create_vector_store
 from src.memory.embeddings import OpenAIEmbeddingModel
@@ -61,6 +61,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             for record in records:
                 try:
                     # Parse message body
+                    # Lazy import to avoid circular imports
+                    from src.messaging.sqs_service import ProcessingJob, JobStatus
                     message_body = json.loads(record.get("body", "{}"))
                     job = ProcessingJob.from_dict(message_body)
 
@@ -77,11 +79,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         else:
             # Direct invocation (for testing)
             logger.info("Direct invocation (not from SQS)")
+            # Lazy import to avoid circular imports
+            from src.messaging.sqs_service import ProcessingJob, JobStatus
             job_data = event.get("job", {})
             job = ProcessingJob.from_dict(job_data) if job_data else None
 
             if not job:
-                # Try to create job from event
+                # Try to create job from event (ProcessingJob already imported above)
                 job = ProcessingJob(
                     job_id=event.get("job_id", str(uuid.uuid4())),
                     video_s3_key=event.get("video_s3_key", ""),
@@ -99,16 +103,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
 
-def process_video_job(job: ProcessingJob, settings: Settings) -> Dict[str, Any]:
+def process_video_job(job: Any, settings: Settings) -> Dict[str, Any]:
     """Process a single video processing job.
 
     Args:
-        job: ProcessingJob to process.
+        job: ProcessingJob to process (Any to avoid circular import in type hint).
         settings: Application settings.
 
     Returns:
         Dictionary with status code and result.
     """
+    # Lazy import to avoid circular imports
+    from src.messaging.sqs_service import ProcessingJob, JobStatus
     job.status = JobStatus.PROCESSING
     job.started_at = job.started_at or __import__("datetime").datetime.utcnow().isoformat()
 
@@ -121,6 +127,8 @@ def process_video_job(job: ProcessingJob, settings: Settings) -> Dict[str, Any]:
     try:
         # Initialize services
         s3_service = S3Service(settings)
+        # Lazy import SQSService to avoid circular import issues
+        from src.messaging.sqs_service import SQSService
         sqs_service = SQSService(settings)
 
         # Download video from S3
@@ -200,6 +208,8 @@ def process_video_job(job: ProcessingJob, settings: Settings) -> Dict[str, Any]:
 
         # Send to DLQ if configured
         try:
+            # Lazy import SQSService to avoid circular import issues
+            from src.messaging.sqs_service import SQSService
             sqs_service = SQSService(settings)
             sqs_service.send_to_dlq(job, str(e))
         except Exception as dlq_error:

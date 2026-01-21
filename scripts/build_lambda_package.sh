@@ -52,6 +52,16 @@ find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
 find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 find . -type f -name "*.pyc" -delete 2>/dev/null || true
 find . -type f -name "*.pyo" -delete 2>/dev/null || true
+# Remove unnecessary large files for Lambda
+find . -name "*.a" -delete 2>/dev/null || true
+find . -name "*.txt" -path "*/test*" -delete 2>/dev/null || true
+find . -name "*.md" -delete 2>/dev/null || true
+find . -name "*.html" -delete 2>/dev/null || true
+find . -name "*.js" -delete 2>/dev/null || true
+find . -name "*.css" -delete 2>/dev/null || true
+find . -path "*/tests/*" -delete 2>/dev/null || true
+find . -path "*/test/*" -delete 2>/dev/null || true
+find . -path "*/__pycache__/*" -delete 2>/dev/null || true
 
 # Create zip file
 echo "Creating zip package..."
