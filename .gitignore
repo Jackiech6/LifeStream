@@ -69,3 +69,4 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+infrastructure/lambda_package.zip
