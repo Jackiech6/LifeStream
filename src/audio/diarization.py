@@ -44,6 +44,13 @@ class SpeakerDiarizer:
         try:
             from pyannote.audio import Pipeline
             
+            # If Pipeline is not a real class with from_pretrained (e.g., mocked), skip
+            if not hasattr(Pipeline, "from_pretrained"):
+                raise ImportError(
+                    "pyannote.audio Pipeline does not provide from_pretrained; "
+                    "dependencies not fully installed or are being mocked."
+                )
+            
             # Check for HuggingFace token
             if not self.settings.huggingface_token:
                 raise ValueError(
@@ -82,6 +89,9 @@ class SpeakerDiarizer:
             
             logger.info("Diarization model loaded successfully")
             
+        except ImportError as e:
+            logger.error(f"Failed to load diarization model (ImportError): {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to load diarization model: {e}")
             raise RuntimeError(f"Could not load diarization model: {e}") from e

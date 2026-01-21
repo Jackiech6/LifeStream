@@ -119,8 +119,14 @@ def test_upsert_vectors(settings_with_pinecone, mock_pinecone):
 
     # Verify upsert was called
     assert mock_index.upsert.called
-    call_args = mock_index.upsert.call_args[0][0]  # First positional arg (vectors)
-    assert len(call_args) == 3  # 3 vectors
+    # Accept both kwargs-style and positional-style invocations
+    call_args, call_kwargs = mock_index.upsert.call_args
+    vectors_arg = []
+    if "vectors" in call_kwargs:
+        vectors_arg = call_kwargs["vectors"]
+    elif call_args:
+        vectors_arg = call_args[0]
+    assert len(vectors_arg) == 3  # 3 vectors
 
 
 def test_upsert_empty_vectors(settings_with_pinecone, mock_pinecone):
@@ -254,7 +260,11 @@ def test_delete_vectors(settings_with_pinecone, mock_pinecone):
     all_calls = mock_index.delete.call_args_list
     deleted_ids = []
     for call in all_calls:
-        deleted_ids.extend(call[0][0])  # First positional arg is ids list
+        args, kwargs = call
+        if "ids" in kwargs:
+            deleted_ids.extend(kwargs.get("ids", []))
+        elif args:
+            deleted_ids.extend(args[0])
     assert set(deleted_ids) == set(ids)
 
 
@@ -307,5 +317,13 @@ def test_convert_filters(settings_with_pinecone, mock_pinecone):
     filters = {"date": "2026-01-20", "video_id": ["vid1", "vid2"]}
     pinecone_filter = store._convert_filters(filters)
 
-    assert pinecone_filter["date"] == "2026-01-20"
-    assert pinecone_filter["video_id"]["$in"] == ["vid1", "vid2"]
+    # Support both legacy flat format and the $and-wrapped format our helper returns
+    if "date" in pinecone_filter and "video_id" in pinecone_filter:
+        assert pinecone_filter["date"] == "2026-01-20"
+        assert pinecone_filter["video_id"]["$in"] == ["vid1", "vid2"]
+    else:
+        clauses = pinecone_filter.get("$and", [])
+        date_clause = next((c for c in clauses if "date" in c), {})
+        video_clause = next((c for c in clauses if "video_id" in c), {})
+        assert date_clause.get("date") == "2026-01-20"
+        assert video_clause.get("video_id", {}).get("$in") == ["vid1", "vid2"]

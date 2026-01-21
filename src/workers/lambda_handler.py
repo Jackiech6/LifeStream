@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 
 from src.main import process_video
 from src.storage.s3_service import S3Service
-# Import everything lazily to avoid circular imports
+from src.messaging.sqs_service import SQSService, ProcessingJob, JobStatus
 from src.memory.index_builder import index_daily_summary
 from src.memory.store_factory import create_vector_store
 from src.memory.embeddings import OpenAIEmbeddingModel
@@ -53,18 +53,18 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         # Parse SQS event
         if "Records" in event:
-            # SQS event
+            # SQS event (may contain ProcessingJob JSON or embedded S3 event JSON)
             records = event["Records"]
             logger.info(f"Received {len(records)} SQS message(s)")
 
             results = []
             for record in records:
                 try:
-                    # Parse message body
-                    # Lazy import to avoid circular imports
-                    from src.messaging.sqs_service import ProcessingJob, JobStatus
-                    message_body = json.loads(record.get("body", "{}"))
-                    job = ProcessingJob.from_dict(message_body)
+                    message_body_str = record.get("body", "{}")
+                    message_body = json.loads(message_body_str)
+
+                    # Support both direct ProcessingJob dict and S3 event dict
+                    job = _build_job_from_message(message_body, settings)
 
                     # Process the video
                     result = process_video_job(job, settings)
@@ -79,8 +79,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         else:
             # Direct invocation (for testing)
             logger.info("Direct invocation (not from SQS)")
-            # Lazy import to avoid circular imports
-            from src.messaging.sqs_service import ProcessingJob, JobStatus
             job_data = event.get("job", {})
             job = ProcessingJob.from_dict(job_data) if job_data else None
 
@@ -113,8 +111,6 @@ def process_video_job(job: Any, settings: Settings) -> Dict[str, Any]:
     Returns:
         Dictionary with status code and result.
     """
-    # Lazy import to avoid circular imports
-    from src.messaging.sqs_service import ProcessingJob, JobStatus
     job.status = JobStatus.PROCESSING
     job.started_at = job.started_at or __import__("datetime").datetime.utcnow().isoformat()
 
@@ -208,8 +204,6 @@ def process_video_job(job: Any, settings: Settings) -> Dict[str, Any]:
 
         # Send to DLQ if configured
         try:
-            # Lazy import SQSService to avoid circular import issues
-            from src.messaging.sqs_service import SQSService
             sqs_service = SQSService(settings)
             sqs_service.send_to_dlq(job, str(e))
         except Exception as dlq_error:
@@ -231,6 +225,39 @@ def process_video_job(job: Any, settings: Settings) -> Dict[str, Any]:
             logger.debug(f"Cleaned up temp directory: {temp_dir}")
         except Exception as e:
             logger.warning(f"Failed to clean up temp directory: {e}")
+ 
+
+def _build_job_from_message(message_body: Dict[str, Any], settings: Settings):
+    """Build a ProcessingJob from a generic message body.
+
+    Supports:
+    - Direct ProcessingJob dict (legacy behavior)
+    - S3 event dict embedded in an SQS message body
+    """
+    # S3 event style: {"Records": [...{"s3": {"bucket": {"name": ...}, "object": {"key": ...}}}...]}
+    if isinstance(message_body, dict) and "Records" in message_body:
+        records = message_body.get("Records") or []
+        if records:
+            rec = records[0]
+            s3_info = (rec.get("s3") or {})
+            bucket = (s3_info.get("bucket") or {}).get("name") or (settings.aws_s3_bucket_name or "")
+            obj = (s3_info.get("object") or {})
+            key = obj.get("key") or ""
+
+            job_id = (
+                rec.get("responseElements", {}).get("x-amz-request-id")
+                or rec.get("eventID")
+                or str(uuid.uuid4())
+            )
+
+            return ProcessingJob(
+                job_id=job_id,
+                video_s3_key=key,
+                video_s3_bucket=bucket,
+            )
+
+    # Fallback: assume this is already a ProcessingJob dict
+    return ProcessingJob.from_dict(message_body)
 
 
 def process_video_from_s3(

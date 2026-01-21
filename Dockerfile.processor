@@ -62,14 +62,26 @@ RUN set -e && \
     pip install --no-cache-dir "openai-whisper==20231117" || \
     echo "Warning: whisper not installed"
 
-# Verify critical dependencies are installed
+# Install FFmpeg (static linux amd64 build) and verify
+RUN set -e && \
+    curl -L "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ffmpeg-static.tar.xz && \
+    mkdir -p /tmp/ffmpeg-static && \
+    tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp/ffmpeg-static --strip-components=1 && \
+    cp /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg && \
+    cp /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    ffmpeg -version && \
+    ffprobe -version && \
+    echo "✅ FFmpeg and ffprobe installed successfully"
+
+# Verify critical Python dependencies are installed
 RUN set -e && \
     python -c "import pydantic; print('pydantic OK')" && \
     python -c "import boto3; print('boto3 OK')" && \
     python -c "import numpy; print('numpy OK')" && \
     python -c "import openai; print('openai OK')" && \
     python -c "import pinecone; print('pinecone OK')" && \
-    echo "✅ Critical dependencies verified successfully"
+    echo "✅ Critical Python dependencies verified successfully"
 
 # Copy application code
 COPY src/ ${LAMBDA_TASK_ROOT}/src/

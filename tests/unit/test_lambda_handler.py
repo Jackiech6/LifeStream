@@ -6,7 +6,7 @@ import pytest
 import tempfile
 from pathlib import Path
 
-from src.workers.lambda_handler import lambda_handler, process_video_from_s3
+from src.workers.lambda_handler import lambda_handler, process_video_from_s3, process_video_job
 from src.messaging.sqs_service import ProcessingJob, JobStatus
 from config.settings import Settings
 
@@ -140,6 +140,33 @@ def test_lambda_handler_error_handling(mock_s3_service, mock_sqs_service):
 
     assert result["statusCode"] == 500
     assert "error" in result
+
+
+def test_process_video_job_sends_to_dlq_on_failure():
+    """process_video_job should send failed jobs to DLQ without import errors."""
+    from src.messaging.sqs_service import ProcessingJob
+
+    job = ProcessingJob(
+        job_id="job-dlq-1",
+        video_s3_key="uploads/video.mp4",
+        video_s3_bucket="test-bucket",
+    )
+    settings = Settings()
+    settings.aws_sqs_queue_url = "https://sqs.us-east-1.amazonaws.com/123456789/test-queue"
+    settings.aws_sqs_dlq_url = "https://sqs.us-east-1.amazonaws.com/123456789/test-dlq"
+    settings.aws_region = "us-east-1"
+
+    with patch("src.workers.lambda_handler.S3Service") as mock_s3, \
+         patch("src.workers.lambda_handler.process_video_from_s3") as mock_proc, \
+         patch("src.messaging.sqs_service.SQSService.send_to_dlq") as mock_send_to_dlq:
+
+        # Force processing to fail
+        mock_proc.side_effect = Exception("processing failed")
+
+        result = process_video_job(job, settings)
+
+        assert result["statusCode"] == 500
+        mock_send_to_dlq.assert_called_once()
 
 
 def test_process_video_from_s3(mock_s3_service):
