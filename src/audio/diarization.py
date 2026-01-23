@@ -82,6 +82,8 @@ class SpeakerDiarizer:
             # Set HF_TOKEN environment variable for huggingface_hub to use
             import os
             original_token = os.environ.get('HF_TOKEN')
+            original_hf_home = os.environ.get('HF_HOME')
+            original_hf_hub_cache = os.environ.get('HF_HUB_CACHE')
             try:
                 # Set token in environment for huggingface_hub
                 os.environ['HF_TOKEN'] = self.settings.huggingface_token
@@ -89,18 +91,34 @@ class SpeakerDiarizer:
                 # Also try HUGGING_FACE_HUB_TOKEN (alternative env var name)
                 os.environ['HUGGING_FACE_HUB_TOKEN'] = self.settings.huggingface_token
                 
+                # Set cache directory to /tmp for Lambda (read-only file system except /tmp)
+                # This prevents OSError: [Errno 30] Read-only file system: '/home/sbx_user1051'
+                os.environ['HF_HOME'] = '/tmp/huggingface'
+                os.environ['HF_HUB_CACHE'] = '/tmp/huggingface/hub'
+                
+                # Ensure cache directory exists
+                os.makedirs('/tmp/huggingface/hub', exist_ok=True)
+                
                 # Load pipeline without token parameter (uses environment variable)
                 self.pipeline = Pipeline.from_pretrained(
                     self.settings.diarization_model
                 )
             finally:
-                # Restore original token if it existed
+                # Restore original environment variables if they existed
                 if original_token is not None:
                     os.environ['HF_TOKEN'] = original_token
                 elif 'HF_TOKEN' in os.environ:
                     del os.environ['HF_TOKEN']
                 if 'HUGGING_FACE_HUB_TOKEN' in os.environ and original_token is None:
                     del os.environ['HUGGING_FACE_HUB_TOKEN']
+                if original_hf_home is not None:
+                    os.environ['HF_HOME'] = original_hf_home
+                elif 'HF_HOME' in os.environ:
+                    del os.environ['HF_HOME']
+                if original_hf_hub_cache is not None:
+                    os.environ['HF_HUB_CACHE'] = original_hf_hub_cache
+                elif 'HF_HUB_CACHE' in os.environ:
+                    del os.environ['HF_HUB_CACHE']
             
             # Move to GPU if available, otherwise CPU
             import torch
