@@ -59,10 +59,14 @@ RUN set -e && \
     "soundfile>=0.12.1" && \
     python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
 
-# Install scenedetect separately (may have dependencies that conflict)
+# Install scenedetect with headless OpenCV (recommended for Docker/Lambda)
+# Use extras installation to ensure correct OpenCV version
 RUN set -e && \
-    pip install --no-cache-dir "scenedetect==0.6.2" && \
-    python -c "import scenedetect; print('✅ scenedetect installed')" || echo "⚠️ scenedetect installation failed"
+    pip install --no-cache-dir "scenedetect[opencv-headless]==0.6.2" && \
+    python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed')" || \
+    (pip install --no-cache-dir "scenedetect==0.6.2" && \
+     python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed (fallback)')" || \
+     echo "⚠️ scenedetect installation failed")
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
 # Using CPU-only version to reduce size and avoid CUDA dependencies
