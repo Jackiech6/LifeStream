@@ -4,6 +4,16 @@ This module handles speaker diarization using pyannote.audio to identify
 who spoke when in the audio file.
 """
 
+# Set HuggingFace cache directory to /tmp for Lambda (read-only filesystem except /tmp)
+# MUST be set before importing any huggingface_hub or pyannote.audio modules
+import os
+if 'HF_HOME' not in os.environ:
+    os.environ['HF_HOME'] = '/tmp/huggingface'
+if 'HF_HUB_CACHE' not in os.environ:
+    os.environ['HF_HUB_CACHE'] = '/tmp/huggingface/hub'
+# Ensure cache directory exists
+os.makedirs('/tmp/huggingface/hub', exist_ok=True)
+
 import logging
 from typing import List, Optional
 from pathlib import Path
