@@ -79,6 +79,15 @@ class Settings(BaseSettings):
             # Lambda environment: use /tmp (only writable location)
             self.output_dir = "/tmp/lifestream/output"
             self.temp_dir = "/tmp/lifestream/temp"
+            
+            # Explicitly read environment variables for Lambda (fallback if Pydantic doesn't pick them up)
+            # This ensures environment variables set by Terraform are always read correctly
+            if not self.openai_api_key and os.environ.get("OPENAI_API_KEY"):
+                self.openai_api_key = os.environ.get("OPENAI_API_KEY")
+            if not self.pinecone_api_key and os.environ.get("PINECONE_API_KEY"):
+                self.pinecone_api_key = os.environ.get("PINECONE_API_KEY")
+            if not self.huggingface_token and os.environ.get("HUGGINGFACE_TOKEN"):
+                self.huggingface_token = os.environ.get("HUGGINGFACE_TOKEN")
         else:
             # Local development: expand user paths
             self.output_dir = str(Path(self.output_dir).expanduser())
