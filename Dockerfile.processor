@@ -55,10 +55,14 @@ RUN set -e && \
 RUN set -e && \
     pip install --no-cache-dir \
     "opencv-python==4.9.0.80" \
-    "scenedetect==0.6.2" \
     "librosa>=0.10.0" \
     "soundfile>=0.12.1" && \
     python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
+
+# Install scenedetect separately (may have dependencies that conflict)
+RUN set -e && \
+    pip install --no-cache-dir "scenedetect==0.6.2" && \
+    python -c "import scenedetect; print('✅ scenedetect installed')" || echo "⚠️ scenedetect installation failed"
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
 # Using CPU-only version to reduce size and avoid CUDA dependencies
@@ -73,10 +77,11 @@ RUN set -e && \
 # Install pyannote.audio - REQUIRED for speaker diarization
 # Must be installed after torch
 # Note: pyannote.core 5.x+ requires numpy 2.x (needs GCC >= 9.3)
-# Install einops (required by pyannote.audio), then try to install pyannote.core 4.x
+# Install einops and huggingface_hub (required by pyannote.audio), then try to install pyannote.core 4.x
 # pyannote.core 4.x should work with numpy 1.24.3
 RUN set -e && \
-    pip install --no-cache-dir "einops>=0.6.0" && \
+    pip install --no-cache-dir "einops>=0.6.0" \
+    "huggingface-hub>=0.20.0" && \
     pip install --no-cache-dir "pyannote.audio==3.1.1" --no-deps && \
     (pip install --no-cache-dir "pyannote.core==4.5.1" --no-deps && \
      pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
