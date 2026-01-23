@@ -54,17 +54,18 @@ RUN set -e && \
 
 # Install media processing dependencies (opencv, librosa, scenedetect)
 # scipy already installed above - opencv and scenedetect need it
+# Use opencv-python-headless for Lambda (no GUI dependencies like libGL.so.1)
 # Install librosa without optional dependencies to avoid scikit-learn build issues
 # Install in single RUN to ensure all dependencies available together
 RUN set -e && \
     pip install --no-cache-dir \
-    "opencv-python==4.9.0.80" \
+    "opencv-python-headless==4.9.0.80" \
     "soundfile>=0.12.1" && \
+    python -c "import cv2; print(f'✅ opencv-python-headless {cv2.__version__} installed')" && \
     (pip install --no-cache-dir "librosa>=0.10.0" --no-deps && \
      pip install --no-cache-dir "audioread>=2.1.9" "numba>=0.51.0" "packaging>=20.0" "scipy>=1.6.0" "numpy>=1.21.2" || \
      pip install --no-cache-dir "librosa>=0.10.0") && \
     pip install --no-cache-dir "scenedetect==0.6.2" && \
-    python -c "import cv2; print(f'✅ opencv-python {cv2.__version__} installed')" && \
     python -c "import scipy; import cv2; import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed and importable')" && \
     python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
 
