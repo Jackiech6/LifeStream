@@ -87,27 +87,32 @@ RUN set -e && \
 RUN set -e && \
     pip install --no-cache-dir \
     "einops>=0.6.0" \
-    "huggingface-hub>=0.20.0" \
+    "huggingface-hub>=0.16.4,<0.20.0" \
     "pytorch-lightning>=2.0.0,<3.0.0" \
     "rich>=12.0.0" \
     "semver>=3.0.0" \
     "tensorboardX>=2.6" \
     "lazy_loader>=0.3" && \
     pip install --no-cache-dir "pyannote.audio==3.1.1" --no-deps && \
-    (pip install --no-cache-dir "pyannote.core==4.5.1" --no-deps && \
+    pip install --no-cache-dir "pyannote.pipeline" --no-deps && \
+    pip install --no-cache-dir "optuna<4.0.0" && \
+    pip install --no-cache-dir "torch-audiomentations" && \
+    (pip install --no-cache-dir "pyannote.core==4.5" --no-deps && \
      pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
-     pip install --no-cache-dir "pyannote.core==4.4.1" --no-deps && \
+     pip install --no-cache-dir "pyannote.core==4.4" --no-deps && \
      pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
-     pip install --no-cache-dir "pyannote.core==4.4.0" --no-deps && \
+     pip install --no-cache-dir "pyannote.core==4.3" --no-deps && \
      pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
      echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
-    (pip install --no-cache-dir "pyannote.database==4.1.1" || \
-     pip install --no-cache-dir "pyannote.database==4.0.0" || \
-     echo "Warning: pyannote.database installation failed - may cause import errors") && \
+    pip install --no-cache-dir "pandas<2.0.0" && \
+    pip install --no-cache-dir "pyannote.database==4.1.1" --no-deps && \
+    pip install --no-cache-dir "pyYAML>=3.12" && \
+    python -c "import pyannote.database; print('✅ pyannote.database installed and importable')" && \
     python -c "import scipy; import torch; print('✅ scipy and torch available for pyannote')" && \
     python -c "import einops; print('✅ einops installed')" && \
     python -c "import pytorch_lightning; print('✅ pytorch_lightning installed')" && \
-    (python -c "import pyannote.audio; print('✅ pyannote.audio installed')" || echo "⚠️ pyannote.audio import may fail without full dependencies")
+    python -c "from pyannote.audio import Pipeline; print('✅ pyannote.audio Pipeline importable')" && \
+    python -c "import pyannote.audio; print('✅ pyannote.audio installed and fully functional')"
 
 # Install OpenAI Whisper (required for ASR)
 # Install tiktoken first (required by whisper), then whisper
@@ -143,10 +148,12 @@ RUN set -e && \
     python -c "import openai; print('✅ openai OK')" && \
     python -c "import pinecone; print('✅ pinecone OK')" && \
     python -c "import torch; print(f'✅ torch {torch.__version__} OK')" && \
-    (python -c "import pyannote.audio; print('✅ pyannote.audio OK')" || echo "⚠️ pyannote.audio not fully available (some features may not work)") && \
-    (python -c "import pytorch_lightning; print('✅ pytorch_lightning OK')" || echo "⚠️ pytorch_lightning not available") && \
-    (python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect OK')" || echo "⚠️ scenedetect not available") && \
-    (python -c "import whisper; print('✅ whisper OK')" || echo "⚠️ whisper not available") && \
+    python -c "import pyannote.database; print('✅ pyannote.database OK')" && \
+    python -c "from pyannote.audio import Pipeline; print('✅ pyannote.audio Pipeline OK')" && \
+    python -c "import pyannote.audio; print('✅ pyannote.audio OK')" && \
+    python -c "import pytorch_lightning; print('✅ pytorch_lightning OK')" && \
+    python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect OK')" && \
+    python -c "import whisper; print('✅ whisper OK')" && \
     echo "✅ Critical Python dependencies verified"
 
 # Copy application code
