@@ -91,16 +91,21 @@ class LLMSummarizer:
             logger.info("No audio or video in context; using default timeblock")
             return self._create_default_timeblock(context)
 
+        # Get meeting context
+        is_meeting = context.metadata.get('is_meeting')
+        context_type = context.metadata.get('context_type', 'unknown')
+        
         # Call LLM
         try:
-            logger.info(f"Summarizing context: {context.start_timestamp:.2f}s - {context.end_timestamp:.2f}s")
+            logger.info(f"Summarizing context: {context.start_timestamp:.2f}s - {context.end_timestamp:.2f}s "
+                       f"(type: {context_type})")
             
             response = self.client.chat.completions.create(
                 model=model,
                 messages=[
                     {
                         "role": "system",
-                        "content": self._get_system_prompt()
+                        "content": self._get_system_prompt(is_meeting=is_meeting)
                     },
                     {
                         "role": "user",
@@ -124,9 +129,13 @@ class LLMSummarizer:
             # Return a default TimeBlock on failure
             return self._create_default_timeblock(context)
     
-    def _get_system_prompt(self) -> str:
-        """Get the system prompt for LLM."""
-        return """You are a diary summarization system. Given audio transcripts and visual context, 
+    def _get_system_prompt(self, is_meeting: Optional[bool] = None) -> str:
+        """Get the system prompt for LLM.
+        
+        Args:
+            is_meeting: True if this is a meeting context, False if non-meeting, None if unknown.
+        """
+        base_prompt = """You are a diary summarization system. Given audio transcripts and visual context, 
 generate a structured daily log entry in Markdown format.
 
 Required format:
@@ -145,6 +154,26 @@ CRITICAL: Never use the generic word "Activity" as the Activity Title or **Activ
 - If there is speech: summarize what was discussed (e.g. "Team standup", "Code review discussion").
 - If there is no speech: use "No speech detected" and briefly describe any visual context (e.g. "Silent footage: screen recording").
 - Always extract a specific, descriptive activity from the transcript or visuals."""
+        
+        if is_meeting is True:
+            base_prompt += """
+
+CONTEXT: This is a MEETING. Focus on:
+- Meeting agenda, topics discussed, decisions made
+- Action items and next steps
+- Participant contributions and questions
+- Key outcomes and follow-ups"""
+        elif is_meeting is False:
+            base_prompt += """
+
+CONTEXT: This is a NON-MEETING setting (e.g., lecture, tutorial, solo work, casual conversation).
+Focus on:
+- Main topics or content covered
+- Educational or informational content
+- Key points or takeaways
+- Less emphasis on action items unless explicitly mentioned"""
+        
+        return base_prompt
     
     def _create_prompt(self, context: SynchronizedContext) -> str:
         """Create the prompt for LLM summarization."""
@@ -281,12 +310,18 @@ CRITICAL: Never use the generic word "Activity" as the Activity Title or **Activ
         elif len(context.audio_segments) < 2 or len(context.video_frames) < 1:
             source_reliability = "Low"
 
+        # Get meeting context from metadata
+        context_type = context.metadata.get('context_type')
+        is_meeting = context.metadata.get('is_meeting')
+
         return TimeBlock(
             start_time=start_time_str,
             end_time=end_time_str,
             activity=activity,
             location=location,
             source_reliability=source_reliability,
+            context_type=context_type,
+            is_meeting=is_meeting,
             participants=participants,
             transcript_summary=transcript_summary,
             action_items=action_items,
@@ -320,11 +355,17 @@ CRITICAL: Never use the generic word "Activity" as the Activity Title or **Activ
                 name = speaker_id if speaker_id not in ("unknown", "Speaker_Unknown") else "Unidentified speaker"
                 participants.append(Participant(speaker_id=speaker_id, real_name=name))
 
+        # Get meeting context from metadata
+        context_type = context.metadata.get('context_type')
+        is_meeting = context.metadata.get('is_meeting')
+
         return TimeBlock(
             start_time=start_time_str,
             end_time=end_time_str,
             activity=activity,
             source_reliability="Low",
+            context_type=context_type,
+            is_meeting=is_meeting,
             participants=participants,
             audio_segments=context.audio_segments,
             video_frames=context.video_frames,

@@ -16,6 +16,7 @@ from src.audio.diarization import SpeakerDiarizer
 from src.audio.asr import ASRProcessor
 from src.video.scene_detection import SceneDetector
 from src.processing.synchronization import ContextSynchronizer
+from src.processing.meeting_detection import MeetingDetector
 from src.processing.summarization import LLMSummarizer
 from src.models.data_models import DailySummary
 from config.settings import Settings
@@ -154,8 +155,27 @@ def process_video(
         logger.error(f"Phase 5 (synchronization) failed: {e}")
         raise RuntimeError(f"Synchronization failed: {e}") from e
     
-    # Phase 5: LLM Summarization
-    logger.info("Phase 5: LLM summarization...")
+    # Phase 5.5: Meeting Detection
+    logger.info("Phase 5.5: Meeting detection...")
+    try:
+        meeting_detector = MeetingDetector(settings)
+        
+        # Detect meeting vs non-meeting for each context
+        for context in contexts:
+            metadata = meeting_detector.get_context_metadata(context)
+            context.metadata.update(metadata)
+            logger.debug(f"Context {context.start_timestamp:.2f}s: {metadata['context_type']} "
+                        f"({metadata['num_speakers']} speakers)")
+        
+        meeting_count = sum(1 for ctx in contexts if ctx.metadata.get('is_meeting') is True)
+        logger.info(f"Meeting detection complete: {meeting_count}/{len(contexts)} contexts are meetings")
+        
+    except Exception as e:
+        logger.warning(f"Phase 5.5 (meeting detection) failed: {e}. Continuing without meeting detection.")
+        # Don't raise - allow processing to continue
+    
+    # Phase 6: LLM Summarization
+    logger.info("Phase 6: LLM summarization...")
     try:
         summarizer = LLMSummarizer(settings)
         

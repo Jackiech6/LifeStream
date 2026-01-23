@@ -51,11 +51,14 @@ RUN set -e && \
 
 # Install media processing dependencies
 # Note: FFmpeg, PyTorch, Whisper, etc. are large - install selectively
-# Skip librosa for now (requires GCC >= 9.3) - focus on torch/pyannote first
+# Install librosa for diarization (required for pyannote.audio workaround)
 RUN set -e && \
     pip install --no-cache-dir \
     "opencv-python==4.9.0.80" \
-    "scenedetect==0.6.2"
+    "scenedetect==0.6.2" \
+    "librosa>=0.10.0" \
+    "soundfile>=0.12.1" && \
+    python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
 # Using CPU-only version to reduce size and avoid CUDA dependencies
