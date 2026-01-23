@@ -52,21 +52,21 @@ RUN set -e && \
 # Install media processing dependencies
 # Note: FFmpeg, PyTorch, Whisper, etc. are large - install selectively
 # Install librosa for diarization (required for pyannote.audio workaround)
+# Install scipy for scenedetect
 RUN set -e && \
     pip install --no-cache-dir \
-    "opencv-python==4.9.0.80" \
+    "opencv-python-headless==4.9.0.80" \
     "librosa>=0.10.0" \
-    "soundfile>=0.12.1" && \
-    python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
+    "soundfile>=0.12.1" \
+    "scipy>=1.10.0" && \
+    python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)" && \
+    python -c "import cv2; print('✅ opencv-python-headless installed')" || echo "⚠️ opencv installation failed"
 
-# Install scenedetect with headless OpenCV (recommended for Docker/Lambda)
-# Use extras installation to ensure correct OpenCV version
+# Install scenedetect (opencv-headless already installed above)
 RUN set -e && \
-    pip install --no-cache-dir "scenedetect[opencv-headless]==0.6.2" && \
-    python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed')" || \
-    (pip install --no-cache-dir "scenedetect==0.6.2" && \
-     python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed (fallback)')" || \
-     echo "⚠️ scenedetect installation failed")
+    pip install --no-cache-dir "scenedetect==0.6.2" && \
+    python -c "import scenedetect; from scenedetect import VideoManager, SceneManager; from scenedetect.detectors import ContentDetector; print('✅ scenedetect installed')" || \
+    echo "⚠️ scenedetect installation failed"
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
 # Using CPU-only version to reduce size and avoid CUDA dependencies
