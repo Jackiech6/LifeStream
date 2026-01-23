@@ -121,8 +121,10 @@ class SpeakerDiarizer:
             ValueError: If audio file cannot be processed.
         """
         if not getattr(self, '_dependencies_available', True) or self.pipeline is None:
-            logger.warning("Diarization dependencies not available - skipping diarization")
-            return []
+            raise RuntimeError(
+                "Diarization is mandatory but dependencies are not available. "
+                "Install required dependencies: pip install pyannote.audio torch pytorch-lightning huggingface-hub"
+            )
             
         if not Path(audio_path).exists():
             raise ValueError(f"Audio file does not exist: {audio_path}")

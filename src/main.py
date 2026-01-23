@@ -87,73 +87,75 @@ def process_video(
         logger.error(f"Phase 2 failed: {e}")
         raise RuntimeError(f"Media processing failed: {e}") from e
     
-    # Phase 3: Audio Processing
-    logger.info("Phase 3: Audio processing (diarization + ASR)...")
-    try:
-        diarizer = SpeakerDiarizer(settings)
-        asr_processor = ASRProcessor(settings)
-        
-        # Diarization (may be skipped if dependencies not available)
-        logger.info("Performing speaker diarization...")
-        diarization_segments = diarizer.diarize_audio(audio_path)
-        logger.info(f"Diarization complete: {len(diarization_segments)} segments")
-        
-        # ASR with diarization (may be skipped if Whisper not available)
-        logger.info("Performing speech recognition...")
-        audio_segments = asr_processor.process_audio_with_diarization(
-            audio_path,
-            diarization_segments
-        )
-        logger.info(f"ASR complete: {len(audio_segments)} segments with transcripts")
-        
-        # If both diarization and ASR were skipped, log warning but continue
-        if len(diarization_segments) == 0 and len(audio_segments) == 0:
-            logger.warning("Both diarization and ASR were skipped - video will be processed without audio transcripts")
-        
-    except Exception as e:
-        logger.error(f"Phase 3 failed: {e}")
-        # Don't raise - allow processing to continue without audio features
-        logger.warning("Continuing without audio processing features")
-        audio_segments = []
-        diarization_segments = []
+    # Phase 3: Audio Processing (MANDATORY)
+    logger.info("Phase 3: Audio processing (diarization + ASR) - MANDATORY...")
+    diarizer = SpeakerDiarizer(settings)
+    asr_processor = ASRProcessor(settings)
     
-    # Phase 4: Video Processing (Scene Detection)
-    logger.info("Phase 4: Video processing (scene detection)...")
-    try:
-        scene_detector = SceneDetector(settings)
-        
-        # Detect scenes and extract keyframes
-        scene_keyframes = scene_detector.extract_keyframes_with_scene_detection(
-            video_path,
-            output_dir=Path(settings.temp_dir) / f"{Path(video_path).stem}_keyframes"
-        )
-        logger.info(f"Scene detection complete: {len(scene_keyframes)} keyframes")
-        
-        # Combine with frames from media processor
-        # Use scene-detected keyframes if available, otherwise use regular frames
-        all_video_frames = scene_keyframes if scene_keyframes else video_frames
-        logger.info(f"Total video frames: {len(all_video_frames)}")
-        
-    except Exception as e:
-        logger.warning(f"Phase 4 failed (using regular frames): {e}")
-        all_video_frames = video_frames  # Fall back to regular frames
+    # Diarization is MANDATORY - raise error if it fails
+    logger.info("Performing speaker diarization (MANDATORY)...")
+    diarization_segments = diarizer.diarize_audio(audio_path)
+    if not diarization_segments or len(diarization_segments) == 0:
+        raise RuntimeError("Diarization failed - no speaker segments detected. Diarization is mandatory.")
+    logger.info(f"Diarization complete: {len(diarization_segments)} segments, {len(set(seg.speaker_id for seg in diarization_segments))} unique speakers")
     
-    # Phase 5: Integration & Synthesis
-    logger.info("Phase 5: Temporal context synchronization...")
-    try:
-        synchronizer = ContextSynchronizer(settings)
-        
-        # Synchronize audio and video
-        contexts = synchronizer.synchronize_contexts(
-            audio_segments,
-            all_video_frames,
-            chunk_size=settings.chunk_size_seconds
-        )
-        logger.info(f"Synchronization complete: {len(contexts)} contexts")
-        
-    except Exception as e:
-        logger.error(f"Phase 5 (synchronization) failed: {e}")
-        raise RuntimeError(f"Synchronization failed: {e}") from e
+    # ASR is MANDATORY - raise error if it fails
+    logger.info("Performing speech recognition (MANDATORY)...")
+    audio_segments = asr_processor.process_audio_with_diarization(
+        audio_path,
+        diarization_segments
+    )
+    if not audio_segments or len(audio_segments) == 0:
+        raise RuntimeError("ASR failed - no audio segments with transcripts. ASR is mandatory.")
+    logger.info(f"ASR complete: {len(audio_segments)} segments with transcripts")
+    
+    # Phase 4: Video Processing (Scene Detection - MANDATORY)
+    logger.info("Phase 4: Video processing (scene detection) - MANDATORY...")
+    scene_detector = SceneDetector(settings)
+    
+    # Scene detection is MANDATORY - raise error if it fails
+    logger.info("Detecting scene boundaries (MANDATORY)...")
+    scene_boundaries = scene_detector.detect_scene_changes(video_path)
+    if not scene_boundaries or len(scene_boundaries) == 0:
+        logger.warning("No scene boundaries detected - video may be a single continuous scene")
+        # Still create at least one boundary at the end for chunking
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / fps if fps > 0 else 0
+        cap.release()
+        scene_boundaries = [duration] if duration > 0 else []
+        logger.info(f"Using video duration as single scene boundary: {duration:.2f}s")
+    
+    logger.info(f"Scene detection complete: {len(scene_boundaries)} scene boundaries detected")
+    
+    # Extract keyframes at scene boundaries
+    logger.info("Extracting keyframes at scene boundaries...")
+    scene_keyframes = scene_detector.extract_keyframes(
+        video_path,
+        scene_boundaries,
+        output_dir=Path(settings.temp_dir) / f"{Path(video_path).stem}_keyframes"
+    )
+    logger.info(f"Extracted {len(scene_keyframes)} keyframes at scene boundaries")
+    
+    all_video_frames = scene_keyframes
+    logger.info(f"Total video frames (scene-based): {len(all_video_frames)}")
+    
+    # Phase 5: Integration & Synthesis (using scene boundaries for chunking)
+    logger.info("Phase 5: Temporal context synchronization (scene-based chunking)...")
+    synchronizer = ContextSynchronizer(settings)
+    
+    # Synchronize audio and video using SCENE BOUNDARIES (per project guidelines)
+    # Summary chunks must be based on scene detection boundaries
+    contexts = synchronizer.synchronize_contexts(
+        audio_segments,
+        all_video_frames,
+        scene_boundaries=scene_boundaries  # Use scene boundaries for chunking
+    )
+    if not contexts or len(contexts) == 0:
+        raise RuntimeError("Synchronization failed - no contexts created. This should not happen.")
+    logger.info(f"Synchronization complete: {len(contexts)} scene-based contexts")
     
     # Phase 5.5: Meeting Detection
     logger.info("Phase 5.5: Meeting detection...")

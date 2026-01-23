@@ -30,27 +30,30 @@ class ContextSynchronizer:
         self,
         audio_segments: List[AudioSegment],
         video_frames: List[VideoFrame],
-        chunk_size: Optional[float] = None
+        chunk_size: Optional[float] = None,
+        scene_boundaries: Optional[List[float]] = None
     ) -> List[SynchronizedContext]:
         """Synchronize audio segments and video frames into time-aligned contexts.
         
-        This function creates SynchronizedContext objects for each time window,
-        grouping audio segments and video frames that fall within the same time range.
+        This function creates SynchronizedContext objects based on scene boundaries
+        (if provided) or fixed time windows. According to project guidelines, summary
+        chunks should be based on scene detection boundaries.
         
         Args:
             audio_segments: List of AudioSegment objects with timestamps.
             video_frames: List of VideoFrame objects with timestamps.
-            chunk_size: Size of time window in seconds. If None, uses settings default.
+            chunk_size: Size of time window in seconds (used only if scene_boundaries is None).
+            scene_boundaries: List of scene boundary timestamps in seconds. If provided,
+                            contexts are created based on these boundaries instead of fixed chunks.
             
         Returns:
-            List of SynchronizedContext objects, one for each time window.
+            List of SynchronizedContext objects, one for each scene/time window.
+            
+        Raises:
+            ValueError: If no audio segments or video frames provided.
         """
-        if chunk_size is None:
-            chunk_size = self.chunk_size
-        
         if not audio_segments and not video_frames:
-            logger.warning("No audio segments or video frames provided")
-            return []
+            raise ValueError("No audio segments or video frames provided - cannot synchronize contexts")
         
         # Find the overall time range
         all_timestamps = []
@@ -61,52 +64,103 @@ class ContextSynchronizer:
             all_timestamps.extend([frame.timestamp for frame in video_frames])
         
         if not all_timestamps:
-            logger.warning("No timestamps found in audio or video data")
-            return []
+            raise ValueError("No timestamps found in audio or video data - cannot synchronize contexts")
         
         start_time = min(all_timestamps)
         end_time = max(all_timestamps)
         
-        logger.info(f"Synchronizing contexts: {start_time:.2f}s to {end_time:.2f}s (chunk size: {chunk_size}s)")
-        
-        # Create time windows
-        contexts = []
-        current_start = start_time
-        
-        while current_start < end_time:
-            current_end = min(current_start + chunk_size, end_time)
+        # Use scene boundaries if provided (project guideline: chunks based on scene detection)
+        if scene_boundaries is not None and len(scene_boundaries) > 0:
+            logger.info(f"Synchronizing contexts based on {len(scene_boundaries)} scene boundaries: "
+                       f"{start_time:.2f}s to {end_time:.2f}s")
             
-            # Find audio segments in this window
-            window_audio_segments = [
-                seg for seg in audio_segments
-                if self._segment_overlaps_window(seg, current_start, current_end)
-            ]
+            # Create boundaries list: [start_time, scene_boundaries..., end_time]
+            boundaries = [start_time] + sorted(scene_boundaries) + [end_time]
+            # Remove duplicates and ensure sorted
+            boundaries = sorted(list(set(boundaries)))
             
-            # Find video frames in this window
-            window_video_frames = [
-                frame for frame in video_frames
-                if current_start <= frame.timestamp < current_end
-            ]
-            
-            # Only create context if there's data in the window
-            if window_audio_segments or window_video_frames:
+            contexts = []
+            for i in range(len(boundaries) - 1):
+                current_start = boundaries[i]
+                current_end = boundaries[i + 1]
+                
+                # Find audio segments in this scene window
+                window_audio_segments = [
+                    seg for seg in audio_segments
+                    if self._segment_overlaps_window(seg, current_start, current_end)
+                ]
+                
+                # Find video frames in this scene window
+                window_video_frames = [
+                    frame for frame in video_frames
+                    if current_start <= frame.timestamp < current_end
+                ]
+                
+                # Create context for each scene (even if empty, to maintain scene structure)
                 context = SynchronizedContext(
                     start_timestamp=current_start,
                     end_timestamp=current_end,
                     audio_segments=window_audio_segments,
                     video_frames=window_video_frames,
                     metadata={
-                        "chunk_size": chunk_size,
+                        "chunk_type": "scene_based",
+                        "scene_index": i,
                         "audio_segment_count": len(window_audio_segments),
                         "video_frame_count": len(window_video_frames),
                     }
                 )
                 contexts.append(context)
-                logger.debug(f"Created context: {current_start:.2f}s - {current_end:.2f}s "
+                logger.debug(f"Created scene-based context {i+1}: {current_start:.2f}s - {current_end:.2f}s "
                            f"({len(window_audio_segments)} audio segments, "
                            f"{len(window_video_frames)} video frames)")
+        else:
+            # Fallback to fixed chunk size (should not be used in production per project guidelines)
+            if chunk_size is None:
+                chunk_size = self.chunk_size
             
-            current_start = current_end
+            logger.warning(f"No scene boundaries provided - using fixed chunk size {chunk_size}s "
+                          f"(not recommended per project guidelines)")
+            logger.info(f"Synchronizing contexts: {start_time:.2f}s to {end_time:.2f}s (chunk size: {chunk_size}s)")
+            
+            # Create time windows
+            contexts = []
+            current_start = start_time
+            
+            while current_start < end_time:
+                current_end = min(current_start + chunk_size, end_time)
+                
+                # Find audio segments in this window
+                window_audio_segments = [
+                    seg for seg in audio_segments
+                    if self._segment_overlaps_window(seg, current_start, current_end)
+                ]
+                
+                # Find video frames in this window
+                window_video_frames = [
+                    frame for frame in video_frames
+                    if current_start <= frame.timestamp < current_end
+                ]
+                
+                # Only create context if there's data in the window
+                if window_audio_segments or window_video_frames:
+                    context = SynchronizedContext(
+                        start_timestamp=current_start,
+                        end_timestamp=current_end,
+                        audio_segments=window_audio_segments,
+                        video_frames=window_video_frames,
+                        metadata={
+                            "chunk_type": "fixed_size",
+                            "chunk_size": chunk_size,
+                            "audio_segment_count": len(window_audio_segments),
+                            "video_frame_count": len(window_video_frames),
+                        }
+                    )
+                    contexts.append(context)
+                    logger.debug(f"Created context: {current_start:.2f}s - {current_end:.2f}s "
+                               f"({len(window_audio_segments)} audio segments, "
+                               f"{len(window_video_frames)} video frames)")
+                
+                current_start = current_end
         
         logger.info(f"Created {len(contexts)} synchronized contexts")
         return contexts

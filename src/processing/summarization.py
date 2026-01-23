@@ -86,9 +86,10 @@ class LLMSummarizer:
         has_audio = bool(context.audio_segments)
         has_visual = bool(context.video_frames)
 
-        # Fast path: no audio and no visual → use default timeblock (avoids LLM call)
+        # Check if context has data - if not, this is an error (should not happen with mandatory features)
         if not has_audio and not has_visual:
-            logger.info("No audio or video in context; using default timeblock")
+            logger.warning("Context has no audio or video data - this may indicate a processing error")
+            # Still try to create a meaningful timeblock, but log the issue
             return self._create_default_timeblock(context)
 
         # Get meeting context
