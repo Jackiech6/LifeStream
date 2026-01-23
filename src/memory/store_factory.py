@@ -57,8 +57,15 @@ def create_vector_store(
             store_type = "pinecone"
             logger.info("Auto-selected PineconeVectorStore (API key configured)")
         else:
-            store_type = "faiss"
-            logger.info("Auto-selected FaissVectorStore (no Pinecone API key, using local storage)")
+            # Check if FAISS is available before falling back
+            try:
+                import faiss
+                store_type = "faiss"
+                logger.info("Auto-selected FaissVectorStore (no Pinecone API key, FAISS available)")
+            except ImportError:
+                # If neither is available, prefer Pinecone and let it fail with a clear error
+                store_type = "pinecone"
+                logger.warning("No Pinecone API key and FAISS not available - will attempt Pinecone (may fail)")
 
     # Create the appropriate store
     if store_type == "pinecone":
@@ -82,9 +89,19 @@ def create_vector_store(
                     "Pinecone requested but not installed. "
                     "Install with: pip install pinecone"
                 ) from e
-            # Fallback to FAISS if auto-selected
-            logger.warning("Falling back to FAISS (Pinecone not available)")
-            store_type = "faiss"
+            # Fallback to FAISS if auto-selected, but check if FAISS is available first
+            logger.warning("Pinecone not available, checking FAISS fallback...")
+            try:
+                import faiss
+                logger.warning("Falling back to FAISS (Pinecone not available)")
+                store_type = "faiss"
+            except ImportError:
+                raise RuntimeError(
+                    "Neither Pinecone nor FAISS is available. "
+                    "Pinecone import failed: {}. "
+                    "FAISS not installed. "
+                    "Install with: pip install pinecone OR pip install faiss-cpu"
+                ) from e
 
     if store_type == "faiss":
         try:

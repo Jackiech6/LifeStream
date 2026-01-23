@@ -125,18 +125,32 @@ class S3Service:
             if content_type:
                 extra_args["ContentType"] = content_type
 
-            self.client.upload_file(
-                str(local_path),
-                self._bucket_name,
-                s3_key,
-                ExtraArgs=extra_args,
-            )
+            # Use upload_fileobj for better control, especially for small files
+            # For files < 25MB, use single-part upload to avoid corruption
+            with open(local_path, 'rb') as file_obj:
+                self.client.upload_fileobj(
+                    file_obj,
+                    self._bucket_name,
+                    s3_key,
+                    ExtraArgs=extra_args,
+                )
 
-            # Get object metadata to retrieve ETag
+            # Verify upload by checking file size matches
             response = self.client.head_object(Bucket=self._bucket_name, Key=s3_key)
+            s3_file_size = response.get("ContentLength", 0)
             etag = response.get("ETag", "").strip('"')
+            
+            if s3_file_size != file_size:
+                error_msg = f"S3 upload size mismatch: expected {file_size} bytes, got {s3_file_size} bytes"
+                logger.error(error_msg)
+                # Try to delete the corrupted file
+                try:
+                    self.client.delete_object(Bucket=self._bucket_name, Key=s3_key)
+                except Exception:
+                    pass
+                raise RuntimeError(error_msg)
 
-            logger.info(f"Successfully uploaded {s3_key} (ETag: {etag})")
+            logger.info(f"Successfully uploaded {s3_key} (ETag: {etag}, Size: {s3_file_size} bytes)")
 
             return S3UploadResult(
                 success=True,
@@ -212,6 +226,7 @@ class S3Service:
         s3_key: str,
         expiration: int = 3600,
         http_method: str = "PUT",
+        content_type: Optional[str] = None,
     ) -> str:
         """Generate a presigned URL for direct client uploads.
 
@@ -219,6 +234,7 @@ class S3Service:
             s3_key: S3 object key.
             expiration: URL expiration time in seconds (default: 1 hour).
             http_method: HTTP method (PUT for upload, GET for download).
+            content_type: Optional content type (required for PUT uploads to work correctly).
 
         Returns:
             Presigned URL string.
@@ -227,9 +243,15 @@ class S3Service:
             RuntimeError: If URL generation fails.
         """
         try:
+            params = {"Bucket": self._bucket_name, "Key": s3_key}
+            
+            # For PUT uploads, include ContentType in the signature
+            if http_method == "PUT" and content_type:
+                params["ContentType"] = content_type
+            
             url = self.client.generate_presigned_url(
                 "put_object" if http_method == "PUT" else "get_object",
-                Params={"Bucket": self._bucket_name, "Key": s3_key},
+                Params=params,
                 ExpiresIn=expiration,
             )
 

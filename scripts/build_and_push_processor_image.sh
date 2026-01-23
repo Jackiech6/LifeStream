@@ -34,7 +34,9 @@ aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS 
 echo ""
 echo "Step 2: Building and pushing Docker image for Lambda (Linux amd64)..."
 cd "$PROJECT_ROOT"
+# Use --no-cache to avoid stale layers when updating ffmpeg/tooling
 docker buildx build --platform linux/amd64 \
+  --no-cache \
   --provenance=false \
   --sbom=false \
   -f Dockerfile.processor \

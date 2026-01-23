@@ -35,13 +35,15 @@ RUN set -e && \
 
 # Verify critical dependencies are installed
 RUN set -e && \
-    python -c "import pydantic; print('pydantic OK')" && \
-    python -c "import pydantic_core; print('pydantic_core OK')" && \
-    python -c "import fastapi; print('fastapi OK')" && \
-    python -c "import mangum; print('mangum OK')" && \
-    python -c "import boto3; print('boto3 OK')" && \
-    python -c "import numpy; print('numpy ok')" && \
-    echo "✅ API dependencies verified successfully"
+    python -c "import pydantic; print('✅ pydantic OK')" && \
+    python -c "import pydantic_core; print('✅ pydantic_core OK')" && \
+    python -c "import fastapi; print('✅ fastapi OK')" && \
+    python -c "import mangum; print('✅ mangum OK')" && \
+    python -c "import boto3; print('✅ boto3 OK')" && \
+    python -c "import numpy; print('✅ numpy OK')" && \
+    python -c "import openai; print('✅ openai OK')" && \
+    python -c "import pinecone; print('✅ pinecone OK')" && \
+    echo "✅ All API dependencies verified successfully"
 
 # Copy application code
 COPY src/ ${LAMBDA_TASK_ROOT}/src/

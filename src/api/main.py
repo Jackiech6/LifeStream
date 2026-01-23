@@ -7,8 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config.settings import Settings
-from src.api.routes import upload, status, summary, query
-import logging
+from src.api.routes import upload, presigned_upload, status, summary, query
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -48,7 +47,8 @@ app.add_middleware(
 
 
 # Include routers
-app.include_router(upload.router, prefix="/api/v1", tags=["upload"])
+app.include_router(upload.router, prefix="/api/v1/upload", tags=["upload"])
+app.include_router(presigned_upload.router, prefix="/api/v1/upload", tags=["upload"])
 app.include_router(status.router, prefix="/api/v1", tags=["status"])
 app.include_router(summary.router, prefix="/api/v1", tags=["summary"])
 app.include_router(query.router, prefix="/api/v1", tags=["query"])

@@ -3,13 +3,20 @@
 
 FROM public.ecr.aws/lambda/python:3.11
 
+# Ensure /usr/local/bin is in PATH for ffmpeg/ffprobe
+ENV PATH="/usr/local/bin:${PATH}"
+
 # Install system dependencies required for video/audio processing
-# Install build tools for compiling Python packages
+# Install build tools for compiling Python packages and tools for ffmpeg extraction
 RUN yum update -y && \
     yum install -y \
     gcc \
     gcc-c++ \
     make \
+    git \
+    curl \
+    tar \
+    xz \
     python3-devel \
     && yum clean all \
     && rm -rf /var/cache/yum || true
@@ -42,25 +49,60 @@ RUN set -e && \
     "openai==1.12.0" \
     "pinecone==5.0.1"
 
-# Install media processing dependencies (skip problematic ones)
+# Install media processing dependencies
 # Note: FFmpeg, PyTorch, Whisper, etc. are large - install selectively
+# Skip librosa for now (requires GCC >= 9.3) - focus on torch/pyannote first
 RUN set -e && \
     pip install --no-cache-dir \
     "opencv-python==4.9.0.80" \
-    "scenedetect==0.6.2" \
-    "librosa==0.10.2" \
-    "torch==2.1.2" --index-url https://download.pytorch.org/whl/cpu || \
-    echo "Warning: torch installation may have issues"
+    "scenedetect==0.6.2"
 
-# Install pyannote.audio (optional - may fail due to dependencies)
+# Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
+# Using CPU-only version to reduce size and avoid CUDA dependencies
 RUN set -e && \
-    pip install --no-cache-dir "pyannote.audio==3.1.1" || \
-    echo "Warning: pyannote.audio not installed"
+    pip install --no-cache-dir \
+    "torch==2.1.2" \
+    "torchaudio==2.1.2" \
+    --index-url https://download.pytorch.org/whl/cpu && \
+    python -c "import torch; print(f'✅ torch {torch.__version__} installed')" && \
+    python -c "import torchaudio; print(f'✅ torchaudio {torchaudio.__version__} installed')"
 
-# Install OpenAI Whisper
+# Install pyannote.audio - REQUIRED for speaker diarization
+# Must be installed after torch
+# Note: pyannote.core 5.x+ requires numpy 2.x (needs GCC >= 9.3)
+# Install einops (required by pyannote.audio), then try to install pyannote.core 4.x
+# pyannote.core 4.x should work with numpy 1.24.3
 RUN set -e && \
-    pip install --no-cache-dir "openai-whisper==20231117" || \
-    echo "Warning: whisper not installed"
+    pip install --no-cache-dir "einops>=0.6.0" && \
+    pip install --no-cache-dir "pyannote.audio==3.1.1" --no-deps && \
+    (pip install --no-cache-dir "pyannote.core==4.5.1" --no-deps && \
+     pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
+     pip install --no-cache-dir "pyannote.core==4.4.1" --no-deps && \
+     pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
+     pip install --no-cache-dir "pyannote.core==4.4.0" --no-deps && \
+     pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
+     echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
+    pip install --no-cache-dir \
+    "rich>=12.0.0" \
+    "semver>=3.0.0" \
+    "soundfile>=0.12.1" \
+    "tensorboardX>=2.6" && \
+    echo "Note: pyannote.database, pyannote.metrics, pyannote.pipeline, lightning, asteroid-filterbanks, speechbrain, and pytorch-metric-learning skipped (require numpy 2.x)" && \
+    python -c "import torch; print('✅ torch installed')" && \
+    python -c "import einops; print('✅ einops installed')" && \
+    (python -c "import pyannote.audio; print('✅ pyannote.audio installed')" || echo "⚠️ pyannote.audio import may fail without full dependencies")
+
+# Install OpenAI Whisper (required for ASR)
+# Install tiktoken first (required by whisper), then whisper
+# Note: tiktoken may need to be built from source, but we'll try pre-built wheels first
+RUN set -e && \
+    (pip install --no-cache-dir "tiktoken>=0.5.0" || \
+     pip install --no-cache-dir "tiktoken==0.5.0" || \
+     echo "Warning: tiktoken installation failed") && \
+    (pip install --no-cache-dir "openai-whisper==20231117" && \
+     python -c "import whisper; print('✅ whisper installed')" || \
+     (echo "Warning: whisper installation failed (ASR will be skipped)" && \
+      pip install --no-cache-dir "openai-whisper==20231117" --no-deps || echo "whisper --no-deps also failed"))
 
 # Install FFmpeg (static linux amd64 build) and verify
 RUN set -e && \
@@ -76,12 +118,15 @@ RUN set -e && \
 
 # Verify critical Python dependencies are installed
 RUN set -e && \
-    python -c "import pydantic; print('pydantic OK')" && \
-    python -c "import boto3; print('boto3 OK')" && \
-    python -c "import numpy; print('numpy OK')" && \
-    python -c "import openai; print('openai OK')" && \
-    python -c "import pinecone; print('pinecone OK')" && \
-    echo "✅ Critical Python dependencies verified successfully"
+    python -c "import pydantic; print('✅ pydantic OK')" && \
+    python -c "import boto3; print('✅ boto3 OK')" && \
+    python -c "import numpy; print('✅ numpy OK')" && \
+    python -c "import openai; print('✅ openai OK')" && \
+    python -c "import pinecone; print('✅ pinecone OK')" && \
+    python -c "import torch; print(f'✅ torch {torch.__version__} OK')" && \
+    (python -c "import pyannote.audio; print('✅ pyannote.audio OK')" || echo "⚠️ pyannote.audio not fully available (some features may not work)") && \
+    (python -c "import whisper; print('✅ whisper OK')" || echo "⚠️ whisper not available") && \
+    echo "✅ Critical Python dependencies verified (torch is working)"
 
 # Copy application code
 COPY src/ ${LAMBDA_TASK_ROOT}/src/

@@ -40,9 +40,36 @@ async def query_memory(request: QueryRequest):
     try:
         settings = Settings()
         
+        # Check if required API keys are configured
+        if not settings.pinecone_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pinecone API key not configured. Vector store is unavailable."
+            )
+        if not settings.openai_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OpenAI API key not configured. Embeddings are unavailable."
+            )
+        
         # Initialize vector store and embedder
-        store = create_vector_store(settings)
-        embedder = OpenAIEmbeddingModel(settings)
+        try:
+            store = create_vector_store(settings)
+        except RuntimeError as e:
+            logger.error(f"Failed to create vector store: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Vector store unavailable: {str(e)}"
+            )
+        
+        try:
+            embedder = OpenAIEmbeddingModel(settings)
+        except Exception as e:
+            logger.error(f"Failed to initialize embedder: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Embedding model unavailable: {str(e)}"
+            )
         
         # Convert request to SearchQuery
         search_query = SearchQuery(

@@ -50,6 +50,7 @@ def _parse_time_to_seconds(time_str: str) -> float:
 
     Supports formats like:
     - "HH:MM"
+    - "HH:MM:SS"
     - "HH:MM AM"
     - "HH:MM PM"
     """
@@ -68,9 +69,10 @@ def _parse_time_to_seconds(time_str: str) -> float:
         time_part = raw
 
     try:
-        hour_str, minute_str = time_part.split(":")[:2]
-        hours = int(hour_str)
-        minutes = int(minute_str)
+        comps = time_part.split(":")
+        hours = int(comps[0])
+        minutes = int(comps[1]) if len(comps) > 1 else 0
+        seconds = int(comps[2]) if len(comps) > 2 else 0
     except Exception:
         return 0.0
 
@@ -81,7 +83,7 @@ def _parse_time_to_seconds(time_str: str) -> float:
         if suf == "AM" and hours == 12:
             hours = 0
 
-    return float(hours * 3600 + minutes * 60)
+    return float(hours * 3600 + minutes * 60 + seconds)
 
 
 def _collect_speakers(block: TimeBlock) -> List[str]:

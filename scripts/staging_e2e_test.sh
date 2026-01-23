@@ -17,7 +17,7 @@ API_URL="$(cd "$PROJECT_ROOT/infrastructure" && terraform output -raw api_gatewa
 
 log() { echo "[staging-e2e] $*"; }
 
-# 0) Ensure test video exists
+# 0) Ensure test video exists and is valid
 mkdir -p "$VIDEO_DIR"
 if [ ! -f "$VIDEO_PATH" ]; then
   log "Test video not found, generating at $VIDEO_PATH"
@@ -29,34 +29,96 @@ if [ ! -f "$VIDEO_PATH" ]; then
     -f lavfi -i testsrc=duration=5:size=640x360:rate=25 \
     -f lavfi -i sine=frequency=1000:duration=5 \
     -c:v libx264 -c:a aac \
+    -movflags +faststart \
     "$VIDEO_PATH"
+  log "Generated test video: $VIDEO_PATH"
 else
   log "Using existing test video: $VIDEO_PATH"
 fi
 
-# 1) Upload via API
-log "Uploading test video via API..."
-UPLOAD_JSON=$(curl -s -X POST "$API_URL/api/v1/upload" \
-  -F "file=@$VIDEO_PATH" || true)
+# Verify the video file is valid before uploading
+if command -v ffprobe >/dev/null 2>&1; then
+  if ! ffprobe -v error -show_format "$VIDEO_PATH" >/dev/null 2>&1; then
+    echo "Error: Test video file appears corrupted. Regenerating..." >&2
+    rm -f "$VIDEO_PATH"
+    ffmpeg -y \
+      -f lavfi -i testsrc=duration=5:size=640x360:rate=25 \
+      -f lavfi -i sine=frequency=1000:duration=5 \
+      -c:v libx264 -c:a aac \
+      -movflags +faststart \
+      "$VIDEO_PATH"
+  fi
+  VIDEO_SIZE=$(stat -f%z "$VIDEO_PATH" 2>/dev/null || stat -c%s "$VIDEO_PATH" 2>/dev/null || echo "0")
+  log "Test video validated: $VIDEO_SIZE bytes"
+fi
 
-if ! echo "$UPLOAD_JSON" | grep -q 'job_id'; then
-  echo "Upload failed or unexpected response:" >&2
-  echo "$UPLOAD_JSON" >&2
+# Extract job_id using python3 (or python) with JSON passed as an argument
+# Try python3 first, fall back to python
+PYTHON_CMD=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_CMD="python"
+else
+  echo "Error: Neither python3 nor python found in PATH" >&2
   exit 1
 fi
 
-# Extract job_id using python3 with JSON passed as an argument (more robust than stdin heredoc)
-JOB_ID=$(python3 -c 'import json,sys; j=json.loads(sys.argv[1]); print(j.get("job_id",""))' "$UPLOAD_JSON")
+# 1) Get presigned URL
+log "Step 1: Requesting presigned URL..."
+VIDEO_SIZE=$(stat -f%z "$VIDEO_PATH" 2>/dev/null || stat -c%s "$VIDEO_PATH" 2>/dev/null || echo "0")
+PRESIGNED_RESPONSE=$(curl -s -X POST "$API_URL/api/v1/upload/presigned-url" \
+  -H "Content-Type: application/json" \
+  -d "{\"filename\": \"$(basename "$VIDEO_PATH")\", \"file_size\": $VIDEO_SIZE}")
 
-if [ -z "$JOB_ID" ]; then
-  echo "Failed to extract job_id from upload response:" >&2
-  echo "$UPLOAD_JSON" >&2
+if ! echo "$PRESIGNED_RESPONSE" | grep -q 'upload_url'; then
+  echo "Failed to get presigned URL:" >&2
+  echo "$PRESIGNED_RESPONSE" >&2
   exit 1
 fi
 
-log "Upload accepted; job_id=$JOB_ID"
+UPLOAD_URL=$($PYTHON_CMD -c 'import json,sys; j=json.loads(sys.argv[1]); print(j.get("upload_url",""))' "$PRESIGNED_RESPONSE")
+S3_KEY=$($PYTHON_CMD -c 'import json,sys; j=json.loads(sys.argv[1]); print(j.get("s3_key",""))' "$PRESIGNED_RESPONSE")
+JOB_ID=$($PYTHON_CMD -c 'import json,sys; j=json.loads(sys.argv[1]); print(j.get("job_id",""))' "$PRESIGNED_RESPONSE")
 
-# 2) Poll job status
+if [ -z "$UPLOAD_URL" ] || [ -z "$S3_KEY" ] || [ -z "$JOB_ID" ]; then
+  echo "Failed to extract presigned URL data:" >&2
+  echo "$PRESIGNED_RESPONSE" >&2
+  exit 1
+fi
+
+log "Presigned URL generated; job_id=$JOB_ID"
+
+# 2) Upload file directly to S3
+log "Step 2: Uploading file to S3..."
+UPLOAD_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT \
+  --data-binary "@$VIDEO_PATH" \
+  -H "Content-Type: video/mp4" \
+  "$UPLOAD_URL")
+
+if [ "$UPLOAD_HTTP_CODE" != "200" ]; then
+  echo "S3 upload failed with HTTP code: $UPLOAD_HTTP_CODE" >&2
+  exit 1
+fi
+
+log "File uploaded to S3 successfully"
+
+# 3) Confirm upload
+log "Step 3: Confirming upload..."
+CONFIRM_RESPONSE=$(curl -s -X POST "$API_URL/api/v1/upload/confirm" \
+  -H "Content-Type: application/json" \
+  -d "{\"job_id\": \"$JOB_ID\", \"s3_key\": \"$S3_KEY\"}")
+
+if ! echo "$CONFIRM_RESPONSE" | grep -q 'job_id'; then
+  echo "Failed to confirm upload:" >&2
+  echo "$CONFIRM_RESPONSE" >&2
+  exit 1
+fi
+
+log "Upload confirmed; job_id=$JOB_ID"
+
+# 4) Poll job status
 MAX_ATTEMPTS=40
 SLEEP_SECONDS=15
 attempt=1
@@ -65,8 +127,8 @@ STATUS="unknown"
 while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
   log "Polling status (attempt $attempt/$MAX_ATTEMPTS)..."
   STATUS_JSON=$(curl -s "$API_URL/api/v1/status/$JOB_ID" || true)
-  # Extract status using python3 with JSON passed as an argument
-  STATUS=$(python3 -c 'import json,sys; j=json.loads(sys.argv[1]); print(j.get("status",""))' "$STATUS_JSON")
+  # Extract status using python3 (or python) with JSON passed as an argument
+  STATUS=$($PYTHON_CMD -c 'import json,sys; j=json.loads(sys.argv[1]); print(j.get("status",""))' "$STATUS_JSON")
 
   log "Current status: $STATUS"
 

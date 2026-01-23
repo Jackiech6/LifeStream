@@ -7,7 +7,6 @@ into structured daily summaries.
 import logging
 from typing import List, Optional, Dict, Any
 from pathlib import Path
-import base64
 from datetime import datetime
 
 from src.models.data_models import SynchronizedContext, TimeBlock, DailySummary
@@ -82,12 +81,16 @@ class LLMSummarizer:
                 "Set OPENAI_API_KEY in .env file."
             )
         
-        # Prepare prompt
         prompt = self._create_prompt(context)
-        
-        # Get visual context (keyframe descriptions or images)
         visual_context = self._get_visual_context(context)
-        
+        has_audio = bool(context.audio_segments)
+        has_visual = bool(context.video_frames)
+
+        # Fast path: no audio and no visual → use default timeblock (avoids LLM call)
+        if not has_audio and not has_visual:
+            logger.info("No audio or video in context; using default timeblock")
+            return self._create_default_timeblock(context)
+
         # Call LLM
         try:
             logger.info(f"Summarizing context: {context.start_timestamp:.2f}s - {context.end_timestamp:.2f}s")
@@ -137,7 +140,11 @@ Required format:
 * **Action Items:**
   * [ ] [item description]
 
-Be concise and factual. Infer locations from visual context when possible."""
+Be concise and factual. Infer locations from visual context when possible.
+CRITICAL: Never use the generic word "Activity" as the Activity Title or **Activity:** value.
+- If there is speech: summarize what was discussed (e.g. "Team standup", "Code review discussion").
+- If there is no speech: use "No speech detected" and briefly describe any visual context (e.g. "Silent footage: screen recording").
+- Always extract a specific, descriptive activity from the transcript or visuals."""
     
     def _create_prompt(self, context: SynchronizedContext) -> str:
         """Create the prompt for LLM summarization."""
@@ -147,10 +154,10 @@ Be concise and factual. Infer locations from visual context when possible."""
             for seg in context.audio_segments:
                 start_str = self._format_timestamp(seg.start_time)
                 end_str = self._format_timestamp(seg.end_time)
-                transcript = seg.transcript_text or "[no transcript]"
+                transcript = (seg.transcript_text or "").strip() or "[no transcript]"
                 lines.append(f"[{seg.speaker_id}] ({start_str}-{end_str}): {transcript}")
         else:
-            lines.append("[No audio segments in this time window]")
+            lines.append("[No audio segments in this time window — no speech detected]")
         
         return "\n".join(lines)
     
@@ -174,56 +181,86 @@ Be concise and factual. Infer locations from visual context when possible."""
         secs = int(seconds % 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     
+    def _activity_from_transcript(self, context: SynchronizedContext, max_chars: int = 80) -> Optional[str]:
+        """Derive a short activity description from context transcript. Used as fallback when LLM returns generic 'Activity'."""
+        if not context.audio_segments:
+            return None
+        parts = []
+        for seg in context.audio_segments[:5]:
+            t = (seg.transcript_text or "").strip()
+            if t and t != "[no transcript]":
+                parts.append(t)
+        if not parts:
+            return None
+        combined = " ".join(parts)
+        if len(combined) <= max_chars:
+            return combined.strip()
+        return combined[: max_chars].rsplit(maxsplit=1)[0].strip() + "…"
+
     def _parse_llm_response(self, response_text: str, context: SynchronizedContext) -> TimeBlock:
-        """Parse LLM response into TimeBlock.
-        
-        This is a simplified parser. In production, you'd want more robust parsing.
-        """
-        # Extract basic information from response
-        # For now, create a simple TimeBlock from the context
-        
+        """Parse LLM response into TimeBlock."""
+        from src.models.data_models import Participant
+
         start_time_str = self._format_time_string(context.start_timestamp)
         end_time_str = self._format_time_string(context.end_timestamp)
-        
-        # Extract activity from response (first line after ##)
-        activity = "Activity"  # Default
+
+        # Extract activity: try ## title first, then **Activity:** line
+        activity: Optional[str] = None
         if "##" in response_text:
-            first_line = response_text.split("##")[1].split("\n")[0].strip()
-            if ":" in first_line:
-                activity = first_line.split(":")[-1].strip()
-        
-        # Extract location if present
+            first = response_text.split("##")[1].split("\n")[0].strip()
+            if ":" in first:
+                activity = first.split(":", 1)[-1].strip()
+        if (not activity or activity.lower() == "activity") and "**Activity:**" in response_text:
+            for line in response_text.split("\n"):
+                if "**Activity:**" in line:
+                    activity = line.split("**Activity:**", 1)[-1].strip()
+                    break
+        # Reject generic "Activity"; use transcript fallback when available
+        if not activity or activity.strip().lower() == "activity":
+            activity = self._activity_from_transcript(context)
+        if not activity:
+            activity = "No speech detected" if not context.audio_segments else "Activity"
+
+        # Location
         location = None
         if "**Location:**" in response_text:
-            loc_line = [line for line in response_text.split("\n") if "**Location:**" in line]
-            if loc_line:
-                location = loc_line[0].split("**Location:**")[-1].strip()
-        
-        # Extract transcript summary
+            for line in response_text.split("\n"):
+                if "**Location:**" in line:
+                    location = line.split("**Location:**", 1)[-1].strip()
+                    break
+
+        # Transcript summary: allow same-line or following lines
         transcript_summary = None
         if "**Transcript Summary:**" in response_text:
-            summary_lines = []
-            in_summary = False
             for line in response_text.split("\n"):
                 if "**Transcript Summary:**" in line:
-                    in_summary = True
-                    continue
-                if in_summary and line.strip() and not line.startswith("*"):
-                    summary_lines.append(line.strip())
-                elif in_summary and line.startswith("*"):
-                    break
-            if summary_lines:
-                transcript_summary = " ".join(summary_lines)
-        
-        # Extract participants
+                    rest = line.split("**Transcript Summary:**", 1)[-1].strip()
+                    if rest:
+                        transcript_summary = rest
+                        break
+            if not transcript_summary:
+                in_summary = False
+                summary_lines = []
+                for line in response_text.split("\n"):
+                    if "**Transcript Summary:**" in line:
+                        in_summary = True
+                        continue
+                    if in_summary and line.strip() and not line.strip().startswith("*"):
+                        summary_lines.append(line.strip())
+                    elif in_summary and line.strip().startswith("*"):
+                        break
+                if summary_lines:
+                    transcript_summary = " ".join(summary_lines)
+
+        # Participants: use real_name=speaker_id so we don't show "unknown: unknown"
         participants = []
         if context.audio_segments:
             speaker_ids = list(set(seg.speaker_id for seg in context.audio_segments))
-            from src.models.data_models import Participant
             for speaker_id in speaker_ids:
-                participants.append(Participant(speaker_id=speaker_id))
-        
-        # Extract action items
+                name = speaker_id if speaker_id not in ("unknown", "Speaker_Unknown") else "Unidentified speaker"
+                participants.append(Participant(speaker_id=speaker_id, real_name=name))
+
+        # Action items
         action_items = []
         if "**Action Items:**" in response_text:
             in_action_items = False
@@ -235,16 +272,15 @@ Be concise and factual. Infer locations from visual context when possible."""
                     item = line.strip().lstrip("*").strip().lstrip("[ ]").strip()
                     if item:
                         action_items.append(item)
-                elif in_action_items and line.strip() and not line.startswith("*"):
+                elif in_action_items and line.strip() and not line.strip().startswith("*"):
                     break
-        
-        # Determine source reliability
+
         source_reliability = "Medium"
         if len(context.audio_segments) > 5 and len(context.video_frames) > 3:
             source_reliability = "High"
         elif len(context.audio_segments) < 2 or len(context.video_frames) < 1:
             source_reliability = "Low"
-        
+
         return TimeBlock(
             start_time=start_time_str,
             end_time=end_time_str,
@@ -255,37 +291,43 @@ Be concise and factual. Infer locations from visual context when possible."""
             transcript_summary=transcript_summary,
             action_items=action_items,
             audio_segments=context.audio_segments,
-            video_frames=context.video_frames
+            video_frames=context.video_frames,
         )
     
     def _format_time_string(self, seconds: float) -> str:
-        """Format timestamp in seconds to HH:MM format."""
+        """Format timestamp in seconds to HH:MM:SS format."""
         total_seconds = int(seconds)
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
-        return f"{hours:02d}:{minutes:02d}"
+        secs = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     
     def _create_default_timeblock(self, context: SynchronizedContext) -> TimeBlock:
         """Create a default TimeBlock when summarization fails."""
+        from src.models.data_models import Participant
+
         start_time_str = self._format_time_string(context.start_timestamp)
         end_time_str = self._format_time_string(context.end_timestamp)
-        
-        from src.models.data_models import Participant
-        
+
+        activity = self._activity_from_transcript(context)
+        if not activity:
+            activity = "No speech detected" if not context.audio_segments else "Visual segment only"
+
         participants = []
         if context.audio_segments:
             speaker_ids = list(set(seg.speaker_id for seg in context.audio_segments))
             for speaker_id in speaker_ids:
-                participants.append(Participant(speaker_id=speaker_id))
-        
+                name = speaker_id if speaker_id not in ("unknown", "Speaker_Unknown") else "Unidentified speaker"
+                participants.append(Participant(speaker_id=speaker_id, real_name=name))
+
         return TimeBlock(
             start_time=start_time_str,
             end_time=end_time_str,
-            activity="Activity",
+            activity=activity,
             source_reliability="Low",
             participants=participants,
             audio_segments=context.audio_segments,
-            video_frames=context.video_frames
+            video_frames=context.video_frames,
         )
     
     def format_markdown_output(self, daily_summary: DailySummary) -> str:

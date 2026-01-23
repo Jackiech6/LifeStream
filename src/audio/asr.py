@@ -29,21 +29,32 @@ class ASRProcessor:
         """Load the Whisper ASR model."""
         try:
             import whisper
+            import os
             
-            logger.info(f"Loading Whisper model: {self.settings.asr_model}")
+            # Set Whisper cache directory to /tmp for Lambda (read-only filesystem)
+            # Whisper downloads models to ~/.cache/whisper by default, which fails in Lambda
+            whisper_cache_dir = os.environ.get("WHISPER_CACHE_DIR", "/tmp/whisper_cache")
+            os.makedirs(whisper_cache_dir, exist_ok=True)
+            os.environ["WHISPER_CACHE_DIR"] = whisper_cache_dir
+            
+            logger.info(f"Loading Whisper model: {self.settings.asr_model} (cache: {whisper_cache_dir})")
             
             # Load Whisper model
-            self.model = whisper.load_model(self.settings.asr_model)
+            self.model = whisper.load_model(self.settings.asr_model, download_root=whisper_cache_dir)
             
             logger.info(f"Whisper model '{self.settings.asr_model}' loaded successfully")
+            self._model_available = True
             
         except ImportError:
-            raise ImportError(
-                "Whisper not installed. Install with: pip install openai-whisper"
+            logger.warning(
+                "Whisper not installed. ASR will be skipped. Install with: pip install openai-whisper"
             )
+            self.model = None
+            self._model_available = False
         except Exception as e:
-            logger.error(f"Failed to load Whisper model: {e}")
-            raise RuntimeError(f"Could not load Whisper model: {e}") from e
+            logger.warning(f"Failed to load Whisper model: {e}. ASR will be skipped.")
+            self.model = None
+            self._model_available = False
     
     def transcribe_audio(
         self,
@@ -62,6 +73,10 @@ class ASRProcessor:
         Raises:
             ValueError: If audio file cannot be processed.
         """
+        if not getattr(self, '_model_available', True) or self.model is None:
+            logger.warning("Whisper model not available - skipping transcription")
+            return []
+            
         if not Path(audio_path).exists():
             raise ValueError(f"Audio file does not exist: {audio_path}")
         
@@ -93,8 +108,8 @@ class ASRProcessor:
             return segments
             
         except Exception as e:
-            logger.error(f"Transcription failed: {e}")
-            raise ValueError(f"Could not transcribe audio: {audio_path}") from e
+            logger.warning(f"Transcription failed: {e}. ASR will be skipped.")
+            return []  # Return empty list instead of raising
     
     def merge_asr_diarization(
         self,
@@ -105,6 +120,7 @@ class ASRProcessor:
         
         This function aligns ASR segments with diarization segments to create
         AudioSegment objects with both transcript text and speaker IDs.
+        If diarization is empty, creates AudioSegment objects from ASR only.
         
         Args:
             asr_output: List of ASR segments with 'start', 'end', 'text' keys.
@@ -113,9 +129,23 @@ class ASRProcessor:
         Returns:
             List of AudioSegment objects with transcript_text populated.
         """
-        if not asr_output or not diarization_output:
-            logger.warning("Empty ASR or diarization output")
+        if not asr_output:
+            logger.warning("Empty ASR output")
             return diarization_output.copy() if diarization_output else []
+        
+        # If no diarization, create AudioSegment objects from ASR only
+        if not diarization_output:
+            logger.info("No diarization available - creating segments from ASR only")
+            from src.models.data_models import AudioSegment
+            segments = []
+            for asr_seg in asr_output:
+                segments.append(AudioSegment(
+                    start_time=asr_seg["start"],
+                    end_time=asr_seg["end"],
+                    transcript_text=asr_seg["text"],
+                    speaker_id="unknown"  # No speaker ID available
+                ))
+            return segments
         
         # Create a mapping of time ranges to speaker IDs
         speaker_map = {}

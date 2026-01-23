@@ -59,10 +59,27 @@ class VideoService:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             s3_key = f"uploads/{timestamp}_{video_path.name}"
 
+        # Verify the video file is valid before uploading
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", str(video_path)],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                raise ValueError(f"Video file validation failed: {result.stderr}")
+            logger.info(f"Video file validated: {video_path}")
+        except FileNotFoundError:
+            logger.warning("ffprobe not found, skipping video validation")
+        except Exception as e:
+            logger.warning(f"Video validation failed (non-fatal): {e}")
+        
         # Upload video to S3
         logger.info(f"Uploading video to S3: {s3_key}")
         s3_service = S3Service(self.settings)
-        s3_service.upload_file(
+        upload_result = s3_service.upload_file(
             video_path,
             s3_key,
             metadata={
@@ -72,6 +89,9 @@ class VideoService:
                 **(metadata or {}),
             },
         )
+        
+        if not upload_result.success:
+            raise RuntimeError(f"S3 upload failed: {upload_result.error}")
 
         # Create processing job
         job = ProcessingJob(
@@ -88,6 +108,47 @@ class VideoService:
         self.sqs_service.send_processing_job(job)
 
         logger.info(f"Created upload job {job_id} for {s3_key}")
+        return job
+
+    def create_job_from_s3(
+        self,
+        job_id: str,
+        s3_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> ProcessingJob:
+        """Create a processing job for a file already in S3.
+        
+        This is used when a file is uploaded directly to S3 via presigned URL.
+        
+        Args:
+            job_id: Pre-generated job ID.
+            s3_key: S3 key of the uploaded file.
+            metadata: Optional metadata to attach to job.
+            
+        Returns:
+            ProcessingJob object.
+            
+        Raises:
+            RuntimeError: If job creation or enqueue fails.
+        """
+        # Get bucket name
+        bucket_name = self.settings.aws_s3_bucket_name or self.s3_service._bucket_name
+        
+        # Create processing job
+        job = ProcessingJob(
+            job_id=job_id,
+            video_s3_key=s3_key,
+            video_s3_bucket=bucket_name,
+            status=JobStatus.PENDING,
+            created_at=datetime.utcnow().isoformat(),
+            metadata=metadata or {},
+        )
+        
+        # Enqueue job
+        logger.info(f"Enqueuing processing job from S3: {job_id}")
+        self.sqs_service.send_processing_job(job)
+        
+        logger.info(f"Created job {job_id} for existing S3 file: {s3_key}")
         return job
 
     def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -114,7 +175,10 @@ class VideoService:
         expiration: int = 3600,
         metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, str]:
-        """Generate a presigned URL for direct client upload to S3.
+        """DEPRECATED: Use /api/v1/upload/presigned-url endpoint instead.
+        
+        Generate a presigned URL for direct client upload to S3.
+        This method is kept for backward compatibility with tests.
 
         Args:
             filename: Name of the file to upload.
@@ -124,18 +188,24 @@ class VideoService:
         Returns:
             Dictionary with 'url' and 's3_key' keys.
         """
+        logger.warning("generate_presigned_upload_url is deprecated - use API endpoint instead")
         # Generate S3 key
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         s3_key = f"uploads/{timestamp}_{filename}"
 
-        # Generate presigned URL
-        url = self.s3_service.generate_presigned_url(s3_key, expiration=expiration)
+        # Generate presigned URL (without Content-Type for backward compatibility)
+        url = self.s3_service.generate_presigned_url(
+            s3_key, 
+            expiration=expiration,
+            http_method="PUT"
+        )
 
         return {
             "url": url,
             "s3_key": s3_key,
             "expires_in": expiration,
         }
+
 
 
 __all__ = ["VideoService"]

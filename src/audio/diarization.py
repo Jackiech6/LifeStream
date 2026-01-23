@@ -34,13 +34,22 @@ class SpeakerDiarizer:
             from pyannote.audio import Pipeline
             logger.info("Diarization dependencies available")
         except ImportError as e:
-            raise ImportError(
-                f"Required dependencies not installed: {e}. "
-                "Install with: pip install pyannote.audio torch"
+            logger.warning(
+                f"Diarization dependencies not fully available: {e}. "
+                "Diarization will be skipped. Install with: pip install pyannote.audio torch"
             )
+            # Don't raise - allow processor to continue without diarization
+            self._dependencies_available = False
+            return
+        self._dependencies_available = True
     
     def _load_model(self) -> None:
         """Load the diarization model."""
+        if not getattr(self, '_dependencies_available', True):
+            logger.warning("Skipping diarization model load - dependencies not available")
+            self.pipeline = None
+            return
+            
         try:
             from pyannote.audio import Pipeline
             
@@ -90,11 +99,13 @@ class SpeakerDiarizer:
             logger.info("Diarization model loaded successfully")
             
         except ImportError as e:
-            logger.error(f"Failed to load diarization model (ImportError): {e}")
-            raise
+            logger.warning(f"Failed to load diarization model (ImportError): {e}. Diarization will be skipped.")
+            self.pipeline = None
+            self._dependencies_available = False
         except Exception as e:
-            logger.error(f"Failed to load diarization model: {e}")
-            raise RuntimeError(f"Could not load diarization model: {e}") from e
+            logger.warning(f"Failed to load diarization model: {e}. Diarization will be skipped.")
+            self.pipeline = None
+            self._dependencies_available = False
     
     def diarize_audio(self, audio_path: str) -> List[AudioSegment]:
         """Perform speaker diarization on audio file.
@@ -104,10 +115,15 @@ class SpeakerDiarizer:
             
         Returns:
             List of AudioSegment objects with speaker IDs and timestamps.
+            Returns empty list if diarization dependencies are not available.
             
         Raises:
             ValueError: If audio file cannot be processed.
         """
+        if not getattr(self, '_dependencies_available', True) or self.pipeline is None:
+            logger.warning("Diarization dependencies not available - skipping diarization")
+            return []
+            
         if not Path(audio_path).exists():
             raise ValueError(f"Audio file does not exist: {audio_path}")
         

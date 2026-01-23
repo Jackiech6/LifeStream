@@ -13,8 +13,8 @@ resource "aws_lambda_function" "video_processor" {
   # Environment variables
   environment {
     variables = {
-      OPENAI_API_KEY        = var.openai_api_key
-      HUGGINGFACE_TOKEN     = var.huggingface_token
+      OPENAI_API_KEY        = var.openai_api_key != "" ? var.openai_api_key : ""
+      HUGGINGFACE_TOKEN     = var.huggingface_token != "" ? var.huggingface_token : ""
       PINECONE_API_KEY      = var.pinecone_api_key != "" ? var.pinecone_api_key : ""
       AWS_S3_BUCKET_NAME    = aws_s3_bucket.videos.id
       AWS_SQS_QUEUE_URL     = aws_sqs_queue.video_processing.id
@@ -24,6 +24,8 @@ resource "aws_lambda_function" "video_processor" {
       PINECONE_ENVIRONMENT  = var.pinecone_environment != "" ? var.pinecone_environment : "us-east-1"
       LLM_MODEL             = "gpt-4o"
       EMBEDDING_MODEL_NAME  = "text-embedding-3-small"
+      # Whisper uses /tmp in Lambda (only writable dir); avoids read-only filesystem errors
+      WHISPER_CACHE_DIR     = "/tmp/whisper_cache"
     }
   }
 

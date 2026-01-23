@@ -85,7 +85,9 @@ class TestLLMSummarizer:
         assert isinstance(timeblock, TimeBlock)
         assert timeblock.start_time is not None
         assert timeblock.end_time is not None
-        assert timeblock.activity == "Activity"
+        # Uses transcript-derived activity when available (mock has "Hello, how are you?")
+        assert timeblock.activity
+        assert "Hello" in timeblock.activity
     
     def test_format_timestamp(self, settings):
         """Test timestamp formatting."""
@@ -98,13 +100,13 @@ class TestLLMSummarizer:
         assert summarizer._format_timestamp(125.5) == "00:02:05"
     
     def test_format_time_string(self, settings):
-        """Test time string formatting."""
+        """Test time string formatting (HH:MM:SS)."""
         mock_openai.OpenAI = MagicMock()
         summarizer = LLMSummarizer(settings)
         
-        assert summarizer._format_time_string(0.0) == "00:00"
-        assert summarizer._format_time_string(3661.0) == "01:01"
-        assert summarizer._format_time_string(125.5) == "00:02"
+        assert summarizer._format_time_string(0.0) == "00:00:00"
+        assert summarizer._format_time_string(3661.0) == "01:01:01"
+        assert summarizer._format_time_string(125.5) == "00:02:05"
     
     def test_create_prompt(self, settings, mock_context):
         """Test prompt creation."""

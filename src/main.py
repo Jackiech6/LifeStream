@@ -92,12 +92,12 @@ def process_video(
         diarizer = SpeakerDiarizer(settings)
         asr_processor = ASRProcessor(settings)
         
-        # Diarization
+        # Diarization (may be skipped if dependencies not available)
         logger.info("Performing speaker diarization...")
         diarization_segments = diarizer.diarize_audio(audio_path)
         logger.info(f"Diarization complete: {len(diarization_segments)} segments")
         
-        # ASR with diarization
+        # ASR with diarization (may be skipped if Whisper not available)
         logger.info("Performing speech recognition...")
         audio_segments = asr_processor.process_audio_with_diarization(
             audio_path,
@@ -105,9 +105,16 @@ def process_video(
         )
         logger.info(f"ASR complete: {len(audio_segments)} segments with transcripts")
         
+        # If both diarization and ASR were skipped, log warning but continue
+        if len(diarization_segments) == 0 and len(audio_segments) == 0:
+            logger.warning("Both diarization and ASR were skipped - video will be processed without audio transcripts")
+        
     except Exception as e:
         logger.error(f"Phase 3 failed: {e}")
-        raise RuntimeError(f"Audio processing failed: {e}") from e
+        # Don't raise - allow processing to continue without audio features
+        logger.warning("Continuing without audio processing features")
+        audio_segments = []
+        diarization_segments = []
     
     # Phase 4: Video Processing (Scene Detection)
     logger.info("Phase 4: Video processing (scene detection)...")

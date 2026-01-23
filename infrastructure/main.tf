@@ -275,6 +275,17 @@ resource "aws_iam_role_policy" "lambda_processor" {
           aws_ecr_repository.lambda_processor.arn,
           aws_ecr_repository.lambda_api.arn
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:openai_api_key*",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:huggingface_token*",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:pinecone_api_key*"
+        ]
       }
     ]
   })
