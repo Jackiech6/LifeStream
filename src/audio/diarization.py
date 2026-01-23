@@ -77,18 +77,30 @@ class SpeakerDiarizer:
             logger.info(f"Loading diarization model: {self.settings.diarization_model}")
             
             # Load pipeline with authentication
-            # Try new API first (token parameter), fall back to old API (use_auth_token)
+            # pyannote.audio 3.1.1 doesn't accept token/use_auth_token parameters directly
+            # Instead, we need to set the token via environment variable or huggingface_hub login
+            # Set HF_TOKEN environment variable for huggingface_hub to use
+            import os
+            original_token = os.environ.get('HF_TOKEN')
             try:
+                # Set token in environment for huggingface_hub
+                os.environ['HF_TOKEN'] = self.settings.huggingface_token
+                
+                # Also try HUGGING_FACE_HUB_TOKEN (alternative env var name)
+                os.environ['HUGGING_FACE_HUB_TOKEN'] = self.settings.huggingface_token
+                
+                # Load pipeline without token parameter (uses environment variable)
                 self.pipeline = Pipeline.from_pretrained(
-                    self.settings.diarization_model,
-                    token=self.settings.huggingface_token
+                    self.settings.diarization_model
                 )
-            except TypeError:
-                # Fall back to deprecated parameter name for older versions
-                self.pipeline = Pipeline.from_pretrained(
-                    self.settings.diarization_model,
-                    use_auth_token=self.settings.huggingface_token
-                )
+            finally:
+                # Restore original token if it existed
+                if original_token is not None:
+                    os.environ['HF_TOKEN'] = original_token
+                elif 'HF_TOKEN' in os.environ:
+                    del os.environ['HF_TOKEN']
+                if 'HUGGING_FACE_HUB_TOKEN' in os.environ and original_token is None:
+                    del os.environ['HUGGING_FACE_HUB_TOKEN']
             
             # Move to GPU if available, otherwise CPU
             import torch
