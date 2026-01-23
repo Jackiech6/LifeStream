@@ -52,21 +52,26 @@ RUN set -e && \
 # Install media processing dependencies
 # Note: FFmpeg, PyTorch, Whisper, etc. are large - install selectively
 # Install librosa for diarization (required for pyannote.audio workaround)
-# Install scipy for scenedetect
+# Install opencv and scipy for scenedetect (scenedetect requires cv2 import)
 RUN set -e && \
     pip install --no-cache-dir \
-    "opencv-python-headless==4.9.0.80" \
+    "opencv-python-headless>=4.8.0" \
     "librosa>=0.10.0" \
     "soundfile>=0.12.1" \
     "scipy>=1.10.0" && \
-    python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)" && \
-    python -c "import cv2; print('✅ opencv-python-headless installed')" || echo "⚠️ opencv installation failed"
+    python -c "import cv2; print(f'✅ opencv-python-headless {cv2.__version__} installed')" && \
+    python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
 
-# Install scenedetect (opencv-headless already installed above)
+# Install scenedetect (opencv and scipy already installed above)
+# Must be in same RUN or verify cv2 is importable
 RUN set -e && \
+    python -c "import cv2; print('Verifying cv2 available for scenedetect...')" && \
     pip install --no-cache-dir "scenedetect==0.6.2" && \
-    python -c "import scenedetect; from scenedetect import VideoManager, SceneManager; from scenedetect.detectors import ContentDetector; print('✅ scenedetect installed')" || \
-    echo "⚠️ scenedetect installation failed"
+    python -c "import scenedetect; from scenedetect import VideoManager, SceneManager; from scenedetect.detectors import ContentDetector; print('✅ scenedetect installed and importable')" || \
+    (echo "⚠️ scenedetect installation/import failed, trying alternative..." && \
+     pip install --no-cache-dir "scenedetect[opencv-headless]==0.6.2" && \
+     python -c "import scenedetect; print('✅ scenedetect installed (with extras)')" || \
+     echo "⚠️ scenedetect installation failed completely")
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
 # Using CPU-only version to reduce size and avoid CUDA dependencies
