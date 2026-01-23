@@ -173,8 +173,10 @@ def process_video(
         logger.info(f"Meeting detection complete: {meeting_count}/{len(contexts)} contexts are meetings")
         
     except Exception as e:
-        logger.warning(f"Phase 5.5 (meeting detection) failed: {e}. Continuing without meeting detection.")
-        # Don't raise - allow processing to continue
+        logger.error(f"Phase 5.5 (meeting detection) failed: {e}")
+        # Meeting detection is important but not critical - log error but continue
+        # This allows processing to complete even if meeting detection fails
+        logger.warning("Continuing without meeting detection metadata")
     
     # Phase 6: LLM Summarization (MANDATORY)
     logger.info("Phase 6: LLM summarization (MANDATORY)...")
