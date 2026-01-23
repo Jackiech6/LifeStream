@@ -101,6 +101,9 @@ RUN set -e && \
      pip install --no-cache-dir "pyannote.core==4.4.0" --no-deps && \
      pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
      echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
+    (pip install --no-cache-dir "pyannote.database>=5.0.0" || \
+     pip install --no-cache-dir "pyannote.database>=4.0.0" || \
+     echo "Warning: pyannote.database installation failed - may cause import errors") && \
     python -c "import scipy; import torch; print('✅ scipy and torch available for pyannote')" && \
     python -c "import einops; print('✅ einops installed')" && \
     python -c "import pytorch_lightning; print('✅ pytorch_lightning installed')" && \
