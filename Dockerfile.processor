@@ -31,6 +31,7 @@ RUN set -e && \
     pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install core dependencies with pinned versions (pre-built wheels only)
+# Install scipy EARLY with pre-built wheel (required by pyannote.audio and scenedetect)
 # Pin versions that have pre-built wheels for Lambda's architecture
 RUN set -e && \
     pip install --no-cache-dir \
@@ -39,9 +40,11 @@ RUN set -e && \
     "python-dotenv==1.0.0" \
     "boto3==1.34.0" \
     "numpy==1.24.3" \
+    "scipy==1.11.4" \
     "Pillow==10.2.0" \
     "click==8.1.7" \
-    "tqdm==4.66.1"
+    "tqdm==4.66.1" && \
+    python -c "import scipy; print(f'✅ scipy {scipy.__version__} installed')"
 
 # Install LLM and API dependencies
 RUN set -e && \
@@ -49,19 +52,17 @@ RUN set -e && \
     "openai==1.12.0" \
     "pinecone==5.0.1"
 
-# Install media processing dependencies
-# Note: FFmpeg, PyTorch, Whisper, etc. are large - install selectively
-# Install opencv-python FIRST (required by scenedetect and librosa)
-# Then install librosa, scipy, and scenedetect together to ensure cv2 is available
+# Install media processing dependencies (opencv, librosa, scenedetect)
+# scipy already installed above - opencv and scenedetect need it
+# Install in single RUN to ensure all dependencies available together
 RUN set -e && \
-    pip install --no-cache-dir "opencv-python==4.9.0.80" && \
-    python -c "import cv2; print(f'✅ opencv-python {cv2.__version__} installed')" && \
     pip install --no-cache-dir \
+    "opencv-python==4.9.0.80" \
     "librosa>=0.10.0" \
     "soundfile>=0.12.1" \
-    "scipy>=1.10.0" \
     "scenedetect==0.6.2" && \
-    python -c "import cv2; import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed and importable')" && \
+    python -c "import cv2; print(f'✅ opencv-python {cv2.__version__} installed')" && \
+    python -c "import scipy; import cv2; import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed and importable')" && \
     python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
@@ -75,30 +76,29 @@ RUN set -e && \
     python -c "import torchaudio; print(f'✅ torchaudio {torchaudio.__version__} installed')"
 
 # Install pyannote.audio - REQUIRED for speaker diarization
-# Must be installed after torch
+# Must be installed after torch AND scipy (scipy already installed above)
 # Note: pyannote.core 5.x+ requires numpy 2.x (needs GCC >= 9.3)
-# Install einops and huggingface_hub (required by pyannote.audio), then try to install pyannote.core 4.x
-# pyannote.core 4.x should work with numpy 1.24.3
+# Install einops, huggingface_hub, and pytorch-lightning first, then pyannote.audio
+# pyannote.core 4.x should work with numpy 1.24.3 and scipy 1.11.4
 RUN set -e && \
-    pip install --no-cache-dir "einops>=0.6.0" \
-    "huggingface-hub>=0.20.0" && \
-    pip install --no-cache-dir "pyannote.audio==3.1.1" --no-deps && \
-    (pip install --no-cache-dir "pyannote.core==4.5.1" --no-deps && \
-     pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
-     pip install --no-cache-dir "pyannote.core==4.4.1" --no-deps && \
-     pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
-     pip install --no-cache-dir "pyannote.core==4.4.0" --no-deps && \
-     pip install --no-cache-dir "numpy==1.24.3" "typing-extensions" "sortedcontainers" || \
-     echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
     pip install --no-cache-dir \
+    "einops>=0.6.0" \
+    "huggingface-hub>=0.20.0" \
+    "pytorch-lightning>=2.0.0,<3.0.0" \
     "rich>=12.0.0" \
     "semver>=3.0.0" \
-    "soundfile>=0.12.1" \
-    "tensorboardX>=2.6" \
-    "pytorch-lightning>=2.0.0,<3.0.0" && \
-    echo "Note: pyannote.database, pyannote.metrics, pyannote.pipeline, asteroid-filterbanks, speechbrain, and pytorch-metric-learning skipped (require numpy 2.x)" && \
-    python -c "import torch; print('✅ torch installed')" && \
+    "tensorboardX>=2.6" && \
+    pip install --no-cache-dir "pyannote.audio==3.1.1" --no-deps && \
+    (pip install --no-cache-dir "pyannote.core==4.5.1" --no-deps && \
+     pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
+     pip install --no-cache-dir "pyannote.core==4.4.1" --no-deps && \
+     pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
+     pip install --no-cache-dir "pyannote.core==4.4.0" --no-deps && \
+     pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
+     echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
+    python -c "import scipy; import torch; print('✅ scipy and torch available for pyannote')" && \
     python -c "import einops; print('✅ einops installed')" && \
+    python -c "import pytorch_lightning; print('✅ pytorch_lightning installed')" && \
     (python -c "import pyannote.audio; print('✅ pyannote.audio installed')" || echo "⚠️ pyannote.audio import may fail without full dependencies")
 
 # Install OpenAI Whisper (required for ASR)
@@ -126,18 +126,20 @@ RUN set -e && \
     echo "✅ FFmpeg and ffprobe installed successfully"
 
 # Verify critical Python dependencies are installed
+# This is a quick verification step - failures are warnings, not errors
 RUN set -e && \
     python -c "import pydantic; print('✅ pydantic OK')" && \
     python -c "import boto3; print('✅ boto3 OK')" && \
     python -c "import numpy; print('✅ numpy OK')" && \
+    python -c "import scipy; print(f'✅ scipy {scipy.__version__} OK')" && \
     python -c "import openai; print('✅ openai OK')" && \
     python -c "import pinecone; print('✅ pinecone OK')" && \
     python -c "import torch; print(f'✅ torch {torch.__version__} OK')" && \
     (python -c "import pyannote.audio; print('✅ pyannote.audio OK')" || echo "⚠️ pyannote.audio not fully available (some features may not work)") && \
     (python -c "import pytorch_lightning; print('✅ pytorch_lightning OK')" || echo "⚠️ pytorch_lightning not available") && \
-    (python -c "import scenedetect; print('✅ scenedetect OK')" || echo "⚠️ scenedetect not available") && \
+    (python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect OK')" || echo "⚠️ scenedetect not available") && \
     (python -c "import whisper; print('✅ whisper OK')" || echo "⚠️ whisper not available") && \
-    echo "✅ Critical Python dependencies verified (torch is working)"
+    echo "✅ Critical Python dependencies verified"
 
 # Copy application code
 COPY src/ ${LAMBDA_TASK_ROOT}/src/
