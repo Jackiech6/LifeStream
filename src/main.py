@@ -176,24 +176,24 @@ def process_video(
         logger.warning(f"Phase 5.5 (meeting detection) failed: {e}. Continuing without meeting detection.")
         # Don't raise - allow processing to continue
     
-    # Phase 6: LLM Summarization
-    logger.info("Phase 6: LLM summarization...")
-    try:
-        summarizer = LLMSummarizer(settings)
-        
-        # Create daily summary
-        video_date = datetime.fromtimestamp(Path(video_path).stat().st_mtime).strftime("%Y-%m-%d")
-        daily_summary = summarizer.create_daily_summary(
-            contexts,
-            date=video_date,
-            video_source=video_path
-        )
-        daily_summary.video_metadata = video_metadata
-        logger.info(f"Summarization complete: {len(daily_summary.time_blocks)} time blocks")
-        
-    except Exception as e:
-        logger.error(f"Phase 5 (summarization) failed: {e}")
-        raise RuntimeError(f"Summarization failed: {e}") from e
+    # Phase 6: LLM Summarization (MANDATORY)
+    logger.info("Phase 6: LLM summarization (MANDATORY)...")
+    summarizer = LLMSummarizer(settings)
+    
+    # LLM summarization is MANDATORY - raise error if it fails
+    # Create daily summary from scene-based contexts
+    video_date = datetime.fromtimestamp(Path(video_path).stat().st_mtime).strftime("%Y-%m-%d")
+    daily_summary = summarizer.create_daily_summary(
+        contexts,
+        date=video_date,
+        video_source=video_path
+    )
+    daily_summary.video_metadata = video_metadata
+    
+    if not daily_summary.time_blocks or len(daily_summary.time_blocks) == 0:
+        raise RuntimeError("LLM summarization failed - no time blocks created. Summarization is mandatory.")
+    
+    logger.info(f"Summarization complete: {len(daily_summary.time_blocks)} scene-based time blocks")
     
     # Save output
     if output_path:

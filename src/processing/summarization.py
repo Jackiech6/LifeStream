@@ -86,11 +86,13 @@ class LLMSummarizer:
         has_audio = bool(context.audio_segments)
         has_visual = bool(context.video_frames)
 
-        # Check if context has data - if not, this is an error (should not happen with mandatory features)
+        # Check if context has data - with mandatory features, this should not happen
         if not has_audio and not has_visual:
-            logger.warning("Context has no audio or video data - this may indicate a processing error")
-            # Still try to create a meaningful timeblock, but log the issue
-            return self._create_default_timeblock(context)
+            logger.error("Context has no audio or video data - this indicates a processing error")
+            raise ValueError(
+                "Context has no audio or video data. "
+                "This should not happen with mandatory diarization, ASR, and scene detection features."
+            )
 
         # Get meeting context
         is_meeting = context.metadata.get('is_meeting')
@@ -127,8 +129,11 @@ class LLMSummarizer:
             
         except Exception as e:
             logger.error(f"Summarization failed: {e}")
-            # Return a default TimeBlock on failure
-            return self._create_default_timeblock(context)
+            # LLM summarization is mandatory - raise error instead of fallback
+            raise RuntimeError(
+                f"LLM summarization failed (mandatory feature): {e}. "
+                "Ensure OpenAI API key is configured and API is accessible."
+            ) from e
     
     def _get_system_prompt(self, is_meeting: Optional[bool] = None) -> str:
         """Get the system prompt for LLM.
