@@ -3,6 +3,9 @@
 # Set HuggingFace cache directory to /tmp for Lambda (read-only filesystem except /tmp)
 # MUST be set before importing any modules that use huggingface_hub
 import os
+# Set HOME to /tmp so os.path.expanduser('~') returns /tmp instead of /home/sbx_user1051
+os.environ['HOME'] = '/tmp'
+# Set HuggingFace-specific cache directories
 os.environ['HF_HOME'] = '/tmp/huggingface'
 os.environ['HF_HUB_CACHE'] = '/tmp/huggingface/hub'
 # Ensure cache directory exists

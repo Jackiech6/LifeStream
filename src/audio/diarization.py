@@ -7,6 +7,9 @@ who spoke when in the audio file.
 # Set HuggingFace cache directory to /tmp for Lambda (read-only filesystem except /tmp)
 # MUST be set before importing any huggingface_hub or pyannote.audio modules
 import os
+# Set HOME to /tmp so os.path.expanduser('~') returns /tmp instead of /home/sbx_user1051
+if 'HOME' not in os.environ:
+    os.environ['HOME'] = '/tmp'
 if 'HF_HOME' not in os.environ:
     os.environ['HF_HOME'] = '/tmp/huggingface'
 if 'HF_HUB_CACHE' not in os.environ:
