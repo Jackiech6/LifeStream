@@ -28,27 +28,34 @@ class SpeakerDiarizer:
         self._load_model()
     
     def _check_dependencies(self) -> None:
-        """Check if required dependencies are available."""
+        """Check if required dependencies are available.
+        
+        Raises:
+            ImportError: If required dependencies are not available (diarization is mandatory).
+        """
         try:
             import torch
             from pyannote.audio import Pipeline
             logger.info("Diarization dependencies available")
         except ImportError as e:
-            logger.warning(
-                f"Diarization dependencies not fully available: {e}. "
-                "Diarization will be skipped. Install with: pip install pyannote.audio torch"
-            )
-            # Don't raise - allow processor to continue without diarization
-            self._dependencies_available = False
-            return
+            raise ImportError(
+                f"Diarization is mandatory but dependencies are not available: {e}. "
+                "Install required dependencies: pip install pyannote.audio torch pytorch-lightning huggingface-hub lazy_loader"
+            ) from e
         self._dependencies_available = True
     
     def _load_model(self) -> None:
-        """Load the diarization model."""
+        """Load the diarization model.
+        
+        Raises:
+            ValueError: If HuggingFace token is missing (diarization is mandatory).
+            RuntimeError: If model loading fails (diarization is mandatory).
+        """
         if not getattr(self, '_dependencies_available', True):
-            logger.warning("Skipping diarization model load - dependencies not available")
-            self.pipeline = None
-            return
+            raise RuntimeError(
+                "Diarization is mandatory but dependencies check failed. "
+                "This should not happen if _check_dependencies() passed."
+            )
             
         try:
             from pyannote.audio import Pipeline
@@ -99,13 +106,15 @@ class SpeakerDiarizer:
             logger.info("Diarization model loaded successfully")
             
         except ImportError as e:
-            logger.warning(f"Failed to load diarization model (ImportError): {e}. Diarization will be skipped.")
-            self.pipeline = None
-            self._dependencies_available = False
+            raise RuntimeError(
+                f"Diarization is mandatory but model loading failed (ImportError): {e}. "
+                "Ensure all dependencies are installed: pip install pyannote.audio torch pytorch-lightning huggingface-hub lazy_loader"
+            ) from e
         except Exception as e:
-            logger.warning(f"Failed to load diarization model: {e}. Diarization will be skipped.")
-            self.pipeline = None
-            self._dependencies_available = False
+            raise RuntimeError(
+                f"Diarization is mandatory but model loading failed: {e}. "
+                "Check HuggingFace token and model availability."
+            ) from e
     
     def diarize_audio(self, audio_path: str) -> List[AudioSegment]:
         """Perform speaker diarization on audio file.
