@@ -106,8 +106,10 @@ RUN set -e && \
      echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
     pip install --no-cache-dir "pandas<2.0.0" && \
     pip install --no-cache-dir "pyannote.database==4.1.1" --no-deps && \
+    pip install --no-cache-dir "pyannote.metrics>=4.0.0" && \
     pip install --no-cache-dir "pyYAML>=3.12" && \
     python -c "import pyannote.database; print('✅ pyannote.database installed and importable')" && \
+    python -c "import pyannote.metrics; print('✅ pyannote.metrics installed and importable')" && \
     python -c "import scipy; import torch; print('✅ scipy and torch available for pyannote')" && \
     python -c "import einops; print('✅ einops installed')" && \
     python -c "import pytorch_lightning; print('✅ pytorch_lightning installed')" && \
@@ -149,6 +151,7 @@ RUN set -e && \
     python -c "import pinecone; print('✅ pinecone OK')" && \
     python -c "import torch; print(f'✅ torch {torch.__version__} OK')" && \
     python -c "import pyannote.database; print('✅ pyannote.database OK')" && \
+    python -c "import pyannote.metrics; print('✅ pyannote.metrics OK')" && \
     python -c "from pyannote.audio import Pipeline; print('✅ pyannote.audio Pipeline OK')" && \
     python -c "import pyannote.audio; print('✅ pyannote.audio OK')" && \
     python -c "import pytorch_lightning; print('✅ pytorch_lightning OK')" && \
