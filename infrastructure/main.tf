@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 
   # Uncomment and configure for remote state (recommended for production)
@@ -32,7 +36,7 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
-# S3 Bucket for video storage
+# S3 Bucket for video storage (same region as ECS via var.aws_region for fast transfers)
 resource "aws_s3_bucket" "videos" {
   bucket = var.s3_bucket_name != "" ? var.s3_bucket_name : "${var.project_name}-videos-${var.environment}-${data.aws_caller_identity.current.account_id}"
 
@@ -94,56 +98,68 @@ resource "aws_s3_bucket_public_access_block" "videos" {
   restrict_public_buckets = true
 }
 
-# S3 Bucket notification configuration (triggers SQS on upload)
-# Note: S3 notifications require SQS queue policy to allow S3 to send messages
-resource "aws_s3_bucket_notification" "video_upload_trigger" {
+# S3 -> SQS: uploads send messages. API /confirm also sends ProcessingJob.
+# Idempotency (conditional PutItem on s3_key|etag) ensures we run at most one task per upload.
+
+resource "aws_s3_bucket_notification" "video_upload" {
   bucket = aws_s3_bucket.videos.id
 
   queue {
-    queue_arn = aws_sqs_queue.video_processing.arn
-    events    = ["s3:ObjectCreated:*"]
+    queue_arn     = aws_sqs_queue.video_processing.arn
+    events        = ["s3:ObjectCreated:*"]
     filter_prefix = "uploads/"
     filter_suffix = ".mp4"
   }
-
-  # Also trigger for other common video formats
   queue {
-    queue_arn = aws_sqs_queue.video_processing.arn
-    events    = ["s3:ObjectCreated:*"]
+    queue_arn     = aws_sqs_queue.video_processing.arn
+    events        = ["s3:ObjectCreated:*"]
     filter_prefix = "uploads/"
     filter_suffix = ".mov"
   }
-
-  queue {
-    queue_arn = aws_sqs_queue.video_processing.arn
-    events    = ["s3:ObjectCreated:*"]
-    filter_prefix = "uploads/"
-    filter_suffix = ".avi"
-  }
-
-  queue {
-    queue_arn = aws_sqs_queue.video_processing.arn
-    events    = ["s3:ObjectCreated:*"]
-    filter_prefix = "uploads/"
-    filter_suffix = ".mkv"
-  }
-
-  # Ensure SQS queue and policy are created before notification
-  depends_on = [
-    aws_sqs_queue.video_processing,
-    aws_sqs_queue_policy.video_processing
-  ]
 }
 
 # SQS Queue for video processing jobs
+# Dispatcher Lambda consumes messages and starts ECS tasks. Visibility long enough for dispatcher.
 resource "aws_sqs_queue" "video_processing" {
   name                       = "${var.project_name}-video-processing-${var.environment}"
-  visibility_timeout_seconds = var.lambda_timeout + 60 # Lambda timeout + buffer
-  message_retention_seconds  = 86400                   # 24 hours
-  receive_wait_time_seconds  = 20                      # Long polling
+  visibility_timeout_seconds = 120  # Dispatcher runs quickly; buffer for RunTask
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds = 20
 
   tags = {
     Name = "${var.project_name}-video-processing-${var.environment}"
+  }
+}
+
+# DynamoDB table for idempotency: (s3_key, etag) -> processed. Process each video exactly once.
+resource "aws_dynamodb_table" "idempotency" {
+  name         = "${var.project_name}-idempotency-${var.environment}"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "idempotency_key"
+
+  attribute {
+    name = "idempotency_key"
+    type = "S"
+  }
+
+  tags = {
+    Name = "${var.project_name}-idempotency-${var.environment}"
+  }
+}
+
+# DynamoDB table for job status (metadata store). ECS task updates status; API can query.
+resource "aws_dynamodb_table" "jobs" {
+  name         = "${var.project_name}-jobs-${var.environment}"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "job_id"
+
+  attribute {
+    name = "job_id"
+    type = "S"
+  }
+
+  tags = {
+    Name = "${var.project_name}-jobs-${var.environment}"
   }
 }
 
@@ -192,105 +208,6 @@ resource "aws_sqs_queue_policy" "video_processing" {
   })
 }
 
-# IAM Role for Lambda processing function
-resource "aws_iam_role" "lambda_processor" {
-  name = "${var.project_name}-lambda-processor-${var.environment}"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "${var.project_name}-lambda-processor-${var.environment}"
-  }
-}
-
-# IAM Policy for Lambda to access S3, SQS, and CloudWatch
-resource "aws_iam_role_policy" "lambda_processor" {
-  name = "${var.project_name}-lambda-processor-policy-${var.environment}"
-  role = aws_iam_role.lambda_processor.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          aws_s3_bucket.videos.arn,
-          "${aws_s3_bucket.videos.arn}/*"
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes",
-          "sqs:SendMessage"
-        ]
-        Resource = [
-          aws_sqs_queue.video_processing.arn,
-          aws_sqs_queue.video_processing_dlq.arn
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ecr:GetAuthorizationToken"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage"
-        ]
-        Resource = [
-          aws_ecr_repository.lambda_processor.arn,
-          aws_ecr_repository.lambda_api.arn
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:openai_api_key*",
-          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:huggingface_token*",
-          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:pinecone_api_key*"
-        ]
-      }
-    ]
-  })
-}
-
 # VPC and Security Group for RDS (if needed)
 # For now, using public RDS for simplicity (restrict in production)
 
@@ -313,6 +230,24 @@ data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
+  }
+}
+
+# Route tables in the default VPC (used by ECS subnets) — needed for S3 Gateway endpoint
+data "aws_route_tables" "default" {
+  vpc_id = data.aws_vpc.default.id
+}
+
+# S3 VPC Gateway endpoint: ECS task S3 traffic stays on AWS backbone (same region),
+# no NAT gateway data charges, lower latency. Required for fast streaming pipeline.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = data.aws_vpc.default.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = data.aws_route_tables.default.ids
+
+  tags = {
+    Name = "${var.project_name}-s3-gateway-${var.environment}"
   }
 }
 

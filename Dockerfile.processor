@@ -1,13 +1,27 @@
 # Dockerfile for Video Processor Lambda Function
-# Uses AWS Lambda Python base image for compatibility
+# Uses AWS Lambda Python base image for compatibility.
+#
+# Bake diarization + ASR models into the image so no HuggingFace/Whisper downloads at runtime.
+# Build with: docker build --build-arg HF_TOKEN=<token> -f Dockerfile.processor .
+# HF_TOKEN required for pyannote (baking). Omit to skip pyannote bake (runtime download).
+#
+# Dependencies used by processor (must all be installed):
+#   Core: pydantic, pydantic-settings, python-dotenv, boto3, numpy, scipy, Pillow, click, tqdm
+#   LLM/indexing: openai, pinecone (faiss-cpu omitted; use Pinecone in Lambda)
+#   Media: opencv-python-headless, scenedetect, librosa, soundfile; ffmpeg/ffprobe (binary)
+#   Audio: torch, torchaudio, whisper, tiktoken
+#   Diarization: pyannote.audio, pyannote.core, pyannote.database, pyannote.pipeline, pyannote.metrics,
+#                matplotlib, pytorch-metric-learning, scikit-learn (sklearn), asteroid-filterbanks (SincNet/PyanNet),
+#                einops, huggingface-hub, pytorch-lightning, etc.
 
 FROM public.ecr.aws/lambda/python:3.11
 
-# Ensure /usr/local/bin is in PATH for ffmpeg/ffprobe
+ARG HF_TOKEN
 ENV PATH="/usr/local/bin:${PATH}"
 
 # Install system dependencies required for video/audio processing
-# Install build tools for compiling Python packages and tools for ffmpeg extraction
+# Install build tools for compiling Python packages and tools for ffmpeg extraction.
+# libsndfile: required by soundfile (Python) / pyannote for WAV load; provides libsndfile.so.
 RUN yum update -y && \
     yum install -y \
     gcc \
@@ -18,6 +32,7 @@ RUN yum update -y && \
     tar \
     xz \
     python3-devel \
+    libsndfile \
     && yum clean all \
     && rm -rf /var/cache/yum || true
 
@@ -47,16 +62,21 @@ RUN set -e && \
     python -c "import scipy; print(f'✅ scipy {scipy.__version__} installed')"
 
 # Install LLM and API dependencies
+# Used by: summarization, meeting_detection, embeddings (openai); store_factory, pinecone_store (pinecone)
+# Pin httpx<0.28: openai 1.12 passes 'proxies' to httpx.Client; httpx 0.28+ dropped it -> Client.__init__() unexpected keyword 'proxies'
 RUN set -e && \
     pip install --no-cache-dir \
+    "httpx>=0.24,<0.28" \
     "openai==1.12.0" \
     "pinecone==5.0.1"
 
+# faiss-cpu omitted: requires numpy>=1.25, which conflicts with our numpy 1.24.3 (pyannote, etc.).
+# Processor uses Pinecone for indexing in Lambda; FAISS fallback only when running locally without Pinecone.
+
 # Install media processing dependencies (opencv, librosa, scenedetect)
-# scipy already installed above - opencv and scenedetect need it
-# Use opencv-python-headless for Lambda (no GUI dependencies like libGL.so.1)
-# Install librosa without optional dependencies to avoid scikit-learn build issues
-# Install in single RUN to ensure all dependencies available together
+# Used by: main (cv2 frame count), scene_detection (scenedetect, cv2), media_processor (ffmpeg binary);
+#          diarization (librosa for audio load). scipy already above.
+# Use opencv-python-headless for Lambda (no GUI deps). Librosa --no-deps to avoid scikit-learn.
 RUN set -e && \
     pip install --no-cache-dir \
     "opencv-python-headless==4.9.0.80" \
@@ -66,7 +86,7 @@ RUN set -e && \
      pip install --no-cache-dir "audioread>=2.1.9" "numba>=0.51.0" "packaging>=20.0" "scipy>=1.6.0" "numpy>=1.21.2" || \
      pip install --no-cache-dir "librosa>=0.10.0") && \
     pip install --no-cache-dir "scenedetect==0.6.2" && \
-    python -c "import scipy; import cv2; import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect installed and importable')" && \
+    python -c "import scenedetect; from scenedetect import open_video, SceneManager; print('✅ scenedetect (open_video) installed')" && \
     python -c "import librosa; print('✅ librosa installed')" || echo "⚠️ librosa installation failed (diarization may use fallback)"
 
 # Install PyTorch (CPU version for Lambda) - REQUIRED for audio processing
@@ -80,10 +100,10 @@ RUN set -e && \
     python -c "import torchaudio; print(f'✅ torchaudio {torchaudio.__version__} installed')"
 
 # Install pyannote.audio - REQUIRED for speaker diarization
-# Must be installed after torch AND scipy (scipy already installed above)
-# Note: pyannote.core 5.x+ requires numpy 2.x (needs GCC >= 9.3)
-# Install einops, huggingface_hub, and pytorch-lightning first, then pyannote.audio
-# pyannote.core 4.x should work with numpy 1.24.3 and scipy 1.11.4
+# Used by: diarization (Pipeline, pyannote.core.Annotation).
+# Transitive: pyannote.metrics (multilabel), pytorch_metric_learning (arcface), matplotlib (mixins),
+#             pyannote.database 5.x (SegmentationProtocol), pyannote.pipeline.
+# Must install after torch and scipy. Use --no-deps for several to avoid numpy 2.x / scikit-learn.
 RUN set -e && \
     pip install --no-cache-dir \
     "einops>=0.6.0" \
@@ -93,6 +113,11 @@ RUN set -e && \
     "semver>=3.0.0" \
     "tensorboardX>=2.6" \
     "lazy_loader>=0.3" && \
+    pip install --no-cache-dir "matplotlib>=3.7.0,<4" --no-deps && \
+    pip install --no-cache-dir "cycler" "fonttools" "kiwisolver" "pyparsing" && \
+    pip install --no-cache-dir "pytorch-metric-learning" --no-deps && \
+    pip install --no-cache-dir "scikit-learn>=1.3.0,<1.4" && \
+    pip install --no-cache-dir "asteroid-filterbanks>=0.4.0" && \
     pip install --no-cache-dir "pyannote.audio==3.1.1" --no-deps && \
     pip install --no-cache-dir "pyannote.pipeline" --no-deps && \
     pip install --no-cache-dir "optuna<4.0.0" && \
@@ -105,7 +130,7 @@ RUN set -e && \
      pip install --no-cache-dir "typing-extensions" "sortedcontainers" || \
      echo "Warning: pyannote.core installation failed - diarization will be skipped") && \
     pip install --no-cache-dir "pandas<2.0.0" && \
-    pip install --no-cache-dir "pyannote.database==4.1.1" --no-deps && \
+    pip install --no-cache-dir "pyannote.database==5.0.1" --no-deps && \
     (pip install --no-cache-dir "pyannote.metrics>=3.2.0,<4.0.0" --no-deps && \
      pip install --no-cache-dir "scipy>=1.6.0" "numpy>=1.21.2" "typing-extensions" || \
      pip install --no-cache-dir "pyannote.metrics==3.3.0" --no-deps && \
@@ -119,20 +144,23 @@ RUN set -e && \
     python -c "import scipy; import torch; print('✅ scipy and torch available for pyannote')" && \
     python -c "import einops; print('✅ einops installed')" && \
     python -c "import pytorch_lightning; print('✅ pytorch_lightning installed')" && \
+    python -c "import matplotlib; print('✅ matplotlib installed')" && \
+    python -c "import pytorch_metric_learning; print('✅ pytorch_metric_learning installed')" && \
+    python -c "import sklearn; print('✅ sklearn (scikit-learn) installed')" && \
+    python -c "import asteroid_filterbanks; print('✅ asteroid_filterbanks installed')" && \
     python -c "from pyannote.audio import Pipeline; print('✅ pyannote.audio Pipeline importable')" && \
     python -c "import pyannote.audio; print('✅ pyannote.audio installed and fully functional')"
 
-# Install OpenAI Whisper (required for ASR)
-# Install tiktoken first (required by whisper), then whisper
-# Note: tiktoken may need to be built from source, but we'll try pre-built wheels first
+# Install ASR: faster-whisper (primary, ~4x faster) + openai-whisper (fallback)
+# faster-whisper uses CTranslate2; openai-whisper uses PyTorch. Both use same model weights.
 RUN set -e && \
     (pip install --no-cache-dir "tiktoken>=0.5.0" || \
-     pip install --no-cache-dir "tiktoken==0.5.0" || \
-     echo "Warning: tiktoken installation failed") && \
+     pip install --no-cache-dir "tiktoken==0.5.0" || echo "tiktoken optional") && \
+    pip install --no-cache-dir "faster-whisper>=1.0.0" && \
+    python -c "from faster_whisper import WhisperModel; print('✅ faster-whisper OK')" && \
     (pip install --no-cache-dir "openai-whisper==20231117" && \
-     python -c "import whisper; print('✅ whisper installed')" || \
-     (echo "Warning: whisper installation failed (ASR will be skipped)" && \
-      pip install --no-cache-dir "openai-whisper==20231117" --no-deps || echo "whisper --no-deps also failed"))
+     python -c "import whisper; print('✅ openai-whisper OK')" || \
+     (pip install --no-cache-dir "openai-whisper==20231117" --no-deps || echo "⚠️ openai-whisper fallback failed"))
 
 # Install FFmpeg (static linux amd64 build) and verify
 RUN set -e && \
@@ -146,8 +174,14 @@ RUN set -e && \
     ffprobe -version && \
     echo "✅ FFmpeg and ffprobe installed successfully"
 
-# Verify critical Python dependencies are installed
-# This is a quick verification step - failures are warnings, not errors
+# Re-pin httpx<0.28 after all installs (huggingface-hub, whisper, etc. can upgrade it).
+# OpenAI 1.12 + httpx 0.28+ -> Client.__init__() unexpected keyword 'proxies'. Force downgrade.
+RUN set -e && \
+    pip install --no-cache-dir "httpx>=0.24,<0.28" && \
+    python -c "import httpx; print(f'✅ httpx {httpx.__version__} (must be <0.28)')" && \
+    python -c "from openai import OpenAI; c=OpenAI(api_key='sk-fake'); print('✅ OpenAI client init OK (no proxies error)')"
+
+# Verify critical Python dependencies (every package used by processor pipeline)
 RUN set -e && \
     python -c "import pydantic; print('✅ pydantic OK')" && \
     python -c "import boto3; print('✅ boto3 OK')" && \
@@ -156,14 +190,41 @@ RUN set -e && \
     python -c "import openai; print('✅ openai OK')" && \
     python -c "import pinecone; print('✅ pinecone OK')" && \
     python -c "import torch; print(f'✅ torch {torch.__version__} OK')" && \
+    python -c "import torchaudio; print('✅ torchaudio OK')" && \
+    python -c "import cv2; print('✅ opencv OK')" && \
+    python -c "import scenedetect; from scenedetect import open_video, SceneManager; print('✅ scenedetect OK')" && \
+    python -c "import librosa; print('✅ librosa OK')" && \
     python -c "import pyannote.database; print('✅ pyannote.database OK')" && \
     python -c "import pyannote.metrics; print('✅ pyannote.metrics OK')" && \
+    python -c "import matplotlib; print('✅ matplotlib OK')" && \
+    python -c "import pytorch_metric_learning; print('✅ pytorch_metric_learning OK')" && \
+    python -c "import sklearn; print('✅ sklearn OK')" && \
+    python -c "import asteroid_filterbanks; print('✅ asteroid_filterbanks OK')" && \
     python -c "from pyannote.audio import Pipeline; print('✅ pyannote.audio Pipeline OK')" && \
     python -c "import pyannote.audio; print('✅ pyannote.audio OK')" && \
     python -c "import pytorch_lightning; print('✅ pytorch_lightning OK')" && \
-    python -c "import scenedetect; from scenedetect import VideoManager; print('✅ scenedetect OK')" && \
+    python -c "from faster_whisper import WhisperModel; print('✅ faster-whisper OK')" && \
     python -c "import whisper; print('✅ whisper OK')" && \
-    echo "✅ Critical Python dependencies verified"
+    echo "✅ All processor dependencies verified"
+
+# Bake models into image (no runtime downloads)
+RUN mkdir -p /opt/models/whisper /opt/models/huggingface/hub
+
+RUN set -e && \
+    python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', download_root='/opt/models/whisper'); print('✅ Baked faster-whisper base')"
+
+RUN set -e && \
+    if [ -n "$HF_TOKEN" ]; then \
+      HF_HOME=/opt/models/huggingface HF_HUB_CACHE=/opt/models/huggingface/hub HF_TOKEN="$HF_TOKEN" \
+      python -c "from pyannote.audio import Pipeline; Pipeline.from_pretrained('pyannote/speaker-diarization-3.1'); print('✅ Baked pyannote diarization')"; \
+    else \
+      echo "⚠️ HF_TOKEN not set; pyannote will download at runtime"; \
+    fi
+
+ENV WHISPER_CACHE_DIR=/opt/models/whisper \
+    HF_HOME=/opt/models/huggingface \
+    HF_HUB_CACHE=/opt/models/huggingface/hub \
+    HF_HUB_OFFLINE=1
 
 # Copy application code
 COPY src/ ${LAMBDA_TASK_ROOT}/src/

@@ -237,6 +237,91 @@ class PineconeVectorStore:
             logger.error(f"Failed to delete vectors from Pinecone: {e}")
             raise RuntimeError(f"Pinecone delete failed: {e}") from e
 
+    def delete_by_filter(self, metadata_filter: dict) -> None:
+        """Delete all vectors matching the given metadata filter.
+
+        Args:
+            metadata_filter: Pinecone-style filter, e.g. {"video_id": "s3://bucket/key"}.
+        """
+        try:
+            pinecone_filter = self._convert_filters(metadata_filter)
+            self.index.delete(filter=pinecone_filter)
+            logger.info("Deleted vectors from Pinecone by filter: %s", list(metadata_filter.keys()))
+        except Exception as e:
+            logger.error("Failed to delete vectors by filter from Pinecone: %s", e)
+            raise RuntimeError(f"Pinecone delete by filter failed: {e}") from e
+
+    def list_all_chunks(self, prefix: str = "chunk_", limit: int = 5000) -> List[Dict[str, Any]]:
+        """List chunk IDs and metadata (no embeddings) from the index.
+
+        Uses list() to paginate IDs with the given prefix, then fetch() to get metadata.
+        Returns a list of dicts with keys: id, and metadata fields (video_id, date, start_time,
+        end_time, source_type, text, etc.). Embeddings are not included.
+
+        Args:
+            prefix: ID prefix to list (default "chunk_").
+            limit: Maximum number of chunks to return.
+
+        Returns:
+            List of {"id": str, **metadata} dicts.
+        """
+        result: List[Dict[str, Any]] = []
+        try:
+            all_ids: List[str] = []
+            # Paginate list: Pinecone list() yields pages; each page may be list of ids or dict with "vectors"
+            if hasattr(self.index, "list"):
+                for page in self.index.list(prefix=prefix, limit=100):
+                    if isinstance(page, (list, tuple)):
+                        all_ids.extend(page)
+                    elif isinstance(page, dict):
+                        for v in page.get("vectors", []):
+                            vid = v.get("id") if isinstance(v, dict) else v
+                            if vid:
+                                all_ids.append(vid)
+                    else:
+                        try:
+                            all_ids.extend(iter(page))
+                        except TypeError:
+                            pass
+                    if len(all_ids) >= limit:
+                        break
+            elif hasattr(self.index, "list_paginated"):
+                token = None
+                while len(all_ids) < limit:
+                    kw: Dict[str, Any] = {"prefix": prefix, "limit": min(100, limit - len(all_ids))}
+                    if token:
+                        kw["pagination_token"] = token
+                    resp = self.index.list_paginated(**kw)
+                    page_ids = resp.get("vectors", [])
+                    if isinstance(page_ids, list):
+                        for v in page_ids:
+                            vid = v.get("id") if isinstance(v, dict) else v
+                            if vid:
+                                all_ids.append(vid)
+                    token = (resp.get("pagination") or {}).get("next")
+                    if not token or not page_ids:
+                        break
+            if not all_ids:
+                return result
+            all_ids = all_ids[:limit]
+            # Fetch metadata in batches (no vectors to save bandwidth if API supports it)
+            fetch_batch_size = 100
+            for i in range(0, len(all_ids), fetch_batch_size):
+                batch = all_ids[i : i + fetch_batch_size]
+                fetch_resp = self.index.fetch(ids=batch)
+                vectors_map = fetch_resp.get("vectors") or fetch_resp.get("records") or {}
+                for _id, rec in vectors_map.items():
+                    if isinstance(rec, dict):
+                        meta = rec.get("metadata") or {}
+                        meta = self._unflatten_metadata(dict(meta))
+                    else:
+                        meta = {}
+                    result.append({"id": _id, **meta})
+            return result
+        except Exception as e:
+            logger.error("Failed to list chunks from Pinecone: %s", e)
+            raise RuntimeError(f"Pinecone list chunks failed: {e}") from e
+
     def _flatten_metadata(self, metadata: dict) -> dict:
         """Flatten nested metadata for Pinecone (only supports flat dicts).
 

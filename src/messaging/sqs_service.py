@@ -92,44 +92,58 @@ class SQSService:
         self._sqs_client = boto3.client("sqs", region_name=self.region)
         logger.info(f"SQSService initialized for queue: {self.queue_url}")
 
-    def send_processing_job(self, job: ProcessingJob) -> str:
+    def send_processing_job(self, job: ProcessingJob, retries: int = 3) -> str:
         """Send a processing job to the queue.
 
         Args:
             job: ProcessingJob object to enqueue.
+            retries: Number of send attempts (default 3).
 
         Returns:
             Message ID from SQS.
 
         Raises:
-            ClientError: If SQS operation fails.
+            RuntimeError: If SQS send fails after all retries.
         """
-        try:
-            message_body = job.to_json()
-            message_attributes = {
-                "job_id": {
-                    "StringValue": job.job_id,
-                    "DataType": "String",
-                },
-                "status": {
-                    "StringValue": job.status.value,
-                    "DataType": "String",
-                },
-            }
-
-            response = self._sqs_client.send_message(
-                QueueUrl=self.queue_url,
-                MessageBody=message_body,
-                MessageAttributes=message_attributes,
-            )
-
-            message_id = response["MessageId"]
-            logger.info(f"Sent processing job {job.job_id} to queue (MessageId: {message_id})")
-            return message_id
-
-        except ClientError as e:
-            logger.error(f"Failed to send job to SQS: {e}")
-            raise RuntimeError(f"SQS send_message failed: {e}") from e
+        import time
+        message_body = job.to_json()
+        message_attributes = {
+            "job_id": {
+                "StringValue": job.job_id,
+                "DataType": "String",
+            },
+            "status": {
+                "StringValue": job.status.value,
+                "DataType": "String",
+            },
+        }
+        last_err = None
+        for attempt in range(retries):
+            try:
+                response = self._sqs_client.send_message(
+                    QueueUrl=self.queue_url,
+                    MessageBody=message_body,
+                    MessageAttributes=message_attributes,
+                )
+                message_id = response["MessageId"]
+                logger.info(
+                    "Sent processing job %s to queue (MessageId: %s)",
+                    job.job_id,
+                    message_id,
+                )
+                return message_id
+            except ClientError as e:
+                last_err = e
+                logger.warning(
+                    "SQS send_message attempt %d/%d failed: %s",
+                    attempt + 1,
+                    retries,
+                    e,
+                )
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+        logger.error("Failed to send job %s to SQS after %d attempts", job.job_id, retries)
+        raise RuntimeError(f"SQS send_message failed: {last_err}") from last_err
 
     def receive_job(self, max_messages: int = 1, wait_time_seconds: int = 20) -> List[ProcessingJob]:
         """Receive processing jobs from the queue.

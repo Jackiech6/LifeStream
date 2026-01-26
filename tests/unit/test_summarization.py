@@ -109,20 +109,50 @@ class TestLLMSummarizer:
         assert summarizer._format_time_string(125.5) == "00:02:05"
     
     def test_create_prompt(self, settings, mock_context):
-        """Test prompt creation."""
+        """Test prompt creation (diarized transcript)."""
         mock_openai.OpenAI = MagicMock()
         summarizer = LLMSummarizer(settings)
         prompt = summarizer._create_prompt(mock_context)
-        
+
         assert isinstance(prompt, str)
-        assert "Audio Transcript" in prompt
-        assert "Speaker_01" in prompt
-    
+        assert "Transcript" in prompt and "Speaker_01" in prompt
+
     def test_get_visual_context(self, settings, mock_context):
-        """Test visual context extraction."""
+        """Test scene-aware visual context."""
         mock_openai.OpenAI = MagicMock()
         summarizer = LLMSummarizer(settings)
         visual_context = summarizer._get_visual_context(mock_context)
-        
+
         assert isinstance(visual_context, str)
         assert len(visual_context) > 0
+
+    def test_parse_llm_response_per_speaker_visual_action_items(self, settings, mock_context):
+        """Test parsing LLM response with Per-Speaker Summary, Visual Summary, Action Items."""
+        mock_openai.OpenAI = MagicMock()
+        summarizer = LLMSummarizer(settings)
+        mock_context.metadata = {"context_type": "meeting", "is_meeting": True}
+
+        response = """## 00:00:00 - 00:05:00: Team standup
+* **Location:** Conference room
+* **Activity:** Team standup
+* **Source Reliability:** High
+* **Participants:**
+  * **Speaker_01:** Speaker_01
+  * **Speaker_02:** Speaker_02
+* **Per-Speaker Summary:**
+  * **Speaker_01:** Reviewed sprint progress and blockers.
+  * **Speaker_02:** Raised API auth blocker; will follow up.
+* **Visual Summary:** Screen share of Jira; camera view of attendees.
+* **Action Items:**
+  * [ ] **Speaker_01:** Send recap by EOD
+  * [ ] **Speaker_02:** Unblock API auth
+"""
+        block = summarizer._parse_llm_response(response, mock_context)
+        assert block.activity == "Team standup"
+        assert block.per_speaker_summary
+        assert "Speaker_01" in block.per_speaker_summary
+        assert "sprint" in block.per_speaker_summary["Speaker_01"].lower()
+        assert block.visual_summary
+        assert "Jira" in block.visual_summary or "Screen" in block.visual_summary
+        assert len(block.action_items) >= 2
+        assert any("Speaker" in item for item in block.action_items)

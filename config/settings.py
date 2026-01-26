@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Model Selection
     diarization_model: str = "pyannote/speaker-diarization-3.1"
     asr_model: str = "base"  # whisper model size: tiny, base, small, medium, large
+    use_faster_whisper: bool = True  # Use faster-whisper (CTranslate2) when True; else openai-whisper
     llm_model: str = "gpt-4o"  # Updated from deprecated gpt-4-vision-preview
     embedding_model_name: str = "text-embedding-3-small"
     embedding_batch_size: int = 64
@@ -25,7 +26,9 @@ class Settings(BaseSettings):
     
     # Processing Parameters
     scene_detection_threshold: float = 0.3
+    scene_detection_frame_skip: int = 2  # 0=none; 2=every 3rd frame (~3x faster), 5=~6x faster
     chunk_size_seconds: int = 300  # 5 minutes
+    parallel_max_workers: int = 2  # Cap for audio||scene parallel branch; avoid oversubscription in Lambda
     
     # Paths (Mac-friendly, uses home directory expansion)
     # For Lambda, use /tmp (read-only file system except /tmp)
@@ -48,7 +51,12 @@ class Settings(BaseSettings):
     aws_sqs_queue_url: Optional[str] = None  # Auto-detect from Terraform output if None
     aws_sqs_dlq_url: Optional[str] = None  # Dead-letter queue URL
     aws_profile: Optional[str] = None  # AWS CLI profile name (e.g., "dev")
+    idempotency_table_name: Optional[str] = None  # DynamoDB table for (s3_key, etag) idempotency
+    jobs_table_name: Optional[str] = None  # DynamoDB table for job status (single source of truth)
     
+    # Streaming video intake (ECS): overlap S3 download with audio extraction from presigned URL
+    use_streaming_video_intake: bool = True  # ECS uses URL for audio while file downloads in parallel
+
     # Lambda Configuration (Stage 3.2)
     lambda_timeout: int = 900  # 15 minutes (max for Lambda)
     lambda_memory: int = 3008  # MB (max for Lambda)
@@ -88,6 +96,10 @@ class Settings(BaseSettings):
                 self.pinecone_api_key = os.environ.get("PINECONE_API_KEY")
             if not self.huggingface_token and os.environ.get("HUGGINGFACE_TOKEN"):
                 self.huggingface_token = os.environ.get("HUGGINGFACE_TOKEN")
+            if not self.idempotency_table_name and os.environ.get("IDEMPOTENCY_TABLE_NAME"):
+                self.idempotency_table_name = os.environ.get("IDEMPOTENCY_TABLE_NAME")
+            if not self.jobs_table_name and os.environ.get("JOBS_TABLE_NAME"):
+                self.jobs_table_name = os.environ.get("JOBS_TABLE_NAME")
         else:
             # Local development: expand user paths
             self.output_dir = str(Path(self.output_dir).expanduser())

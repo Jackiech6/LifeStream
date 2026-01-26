@@ -1,11 +1,13 @@
 """Automatic Speech Recognition (ASR) module.
 
-This module handles speech-to-text transcription using OpenAI Whisper.
+Uses faster-whisper (CTranslate2) when available for ~4x speedup at same quality;
+falls back to OpenAI Whisper otherwise.
 """
 
 import logging
-from typing import List, Dict, Optional
+import os
 from pathlib import Path
+from typing import List, Dict, Optional, Any
 
 from src.models.data_models import AudioSegment
 from config.settings import Settings
@@ -13,226 +15,190 @@ from config.settings import Settings
 logger = logging.getLogger(__name__)
 
 
+def _fw_segments_to_list(segments_iter, word_timestamps: bool) -> List[Dict[str, Any]]:
+    """Consume faster-whisper segment generator into [{"start","end","text","words"}]. """
+    out: List[Dict[str, Any]] = []
+    for s in segments_iter:
+        words = []
+        if word_timestamps and getattr(s, "words", None):
+            for w in s.words:
+                words.append({
+                    "word": getattr(w, "word", ""),
+                    "start": getattr(w, "start", s.start),
+                    "end": getattr(w, "end", s.end),
+                })
+        out.append({
+            "start": s.start,
+            "end": s.end,
+            "text": (s.text or "").strip(),
+            "words": words,
+        })
+    return out
+
+
 class ASRProcessor:
-    """Handles automatic speech recognition using Whisper."""
-    
+    """Handles automatic speech recognition using Whisper (faster-whisper or openai-whisper)."""
+
     def __init__(self, settings: Optional[Settings] = None):
-        """Initialize ASRProcessor.
-        
-        Args:
-            settings: Application settings. If None, creates default settings.
-        """
         self.settings = settings or Settings()
+        self._backend: str = "none"
+        self._model: Any = None
         self._load_model()
-    
+
+    @property
+    def model(self) -> Any:
+        """Backward compatibility: exposes _model as model."""
+        return self._model
+
     def _load_model(self) -> None:
-        """Load the Whisper ASR model."""
+        use_fw = getattr(self.settings, "use_faster_whisper", True)
+        cache_dir = os.environ.get("WHISPER_CACHE_DIR", "/tmp/whisper_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ["WHISPER_CACHE_DIR"] = cache_dir
+
+        if use_fw:
+            try:
+                from faster_whisper import WhisperModel
+                self._model = WhisperModel(
+                    self.settings.asr_model,
+                    device="cpu",
+                    compute_type="int8",
+                    download_root=cache_dir,
+                )
+                self._backend = "faster_whisper"
+                logger.info("Loaded faster-whisper model '%s' (cache=%s)", self.settings.asr_model, cache_dir)
+                return
+            except Exception as e:
+                logger.warning("faster-whisper load failed (%s), falling back to openai-whisper: %s", type(e).__name__, e)
+
         try:
             import whisper
-            import os
-            
-            # Set Whisper cache directory to /tmp for Lambda (read-only filesystem)
-            # Whisper downloads models to ~/.cache/whisper by default, which fails in Lambda
-            whisper_cache_dir = os.environ.get("WHISPER_CACHE_DIR", "/tmp/whisper_cache")
-            os.makedirs(whisper_cache_dir, exist_ok=True)
-            os.environ["WHISPER_CACHE_DIR"] = whisper_cache_dir
-            
-            logger.info(f"Loading Whisper model: {self.settings.asr_model} (cache: {whisper_cache_dir})")
-            
-            # Load Whisper model
-            self.model = whisper.load_model(self.settings.asr_model, download_root=whisper_cache_dir)
-            
-            logger.info(f"Whisper model '{self.settings.asr_model}' loaded successfully")
-            self._model_available = True
-            
-        except ImportError:
-            logger.warning(
-                "Whisper not installed. ASR will be skipped. Install with: pip install openai-whisper"
+            self._model = whisper.load_model(
+                self.settings.asr_model,
+                download_root=cache_dir,
             )
-            self.model = None
-            self._model_available = False
+            self._backend = "whisper"
+            logger.info("Loaded openai-whisper model '%s' (cache=%s)", self.settings.asr_model, cache_dir)
+        except ImportError:
+            logger.warning("Whisper not installed. ASR will be skipped. Install openai-whisper or faster-whisper.")
+            self._model = None
+            self._backend = "none"
         except Exception as e:
-            logger.warning(f"Failed to load Whisper model: {e}. ASR will be skipped.")
-            self.model = None
-            self._model_available = False
-    
+            logger.warning("Failed to load Whisper model: %s. ASR will be skipped.", e)
+            self._model = None
+            self._backend = "none"
+
     def transcribe_audio(
         self,
         audio_path: str,
-        language: Optional[str] = None
-    ) -> List[Dict]:
+        language: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Transcribe audio file with timestamps.
-        
-        Args:
-            audio_path: Path to the audio file.
-            language: Language code (e.g., 'en', 'es'). If None, auto-detect.
-            
+
         Returns:
-            List of dictionaries with 'start', 'end', 'text' keys.
-            
-        Raises:
-            ValueError: If audio file cannot be processed.
+            List of dicts with 'start', 'end', 'text', 'words' keys.
         """
-        if not getattr(self, '_model_available', True) or self.model is None:
-            logger.warning("Whisper model not available - skipping transcription")
+        if self._model is None:
+            logger.warning("ASR model not available - skipping transcription")
             return []
-            
+
         if not Path(audio_path).exists():
             raise ValueError(f"Audio file does not exist: {audio_path}")
-        
+
         try:
-            import whisper
-            
-            logger.info(f"Transcribing audio: {audio_path}")
-            
-            # Transcribe with word-level timestamps
-            result = self.model.transcribe(
-                audio_path,
-                language=language,
-                word_timestamps=True,
-                verbose=False
-            )
-            
-            # Extract segments with timestamps
-            segments = []
-            for segment in result.get("segments", []):
-                segments.append({
-                    "start": segment["start"],
-                    "end": segment["end"],
-                    "text": segment["text"].strip(),
-                    "words": segment.get("words", [])
-                })
-            
-            logger.info(f"Transcription complete: {len(segments)} segments")
-            
+            logger.info("Transcribing audio: %s (backend=%s)", audio_path, self._backend)
+
+            if self._backend == "faster_whisper":
+                segments_gen, _ = self._model.transcribe(
+                    audio_path,
+                    language=language,
+                    word_timestamps=True,
+                    vad_filter=False,
+                )
+                segments = _fw_segments_to_list(segments_gen, word_timestamps=True)
+            else:
+                import whisper
+                result = self._model.transcribe(
+                    audio_path,
+                    language=language,
+                    word_timestamps=True,
+                    verbose=False,
+                )
+                segments = []
+                for seg in result.get("segments", []):
+                    segments.append({
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "text": (seg.get("text") or "").strip(),
+                        "words": seg.get("words", []),
+                    })
+
+            logger.info("Transcription complete: %d segments", len(segments))
             return segments
-            
+
         except Exception as e:
-            logger.warning(f"Transcription failed: {e}. ASR will be skipped.")
-            return []  # Return empty list instead of raising
-    
+            logger.warning("Transcription failed: %s. ASR will be skipped.", e)
+            return []
+
     def merge_asr_diarization(
         self,
-        asr_output: List[Dict],
-        diarization_output: List[AudioSegment]
+        asr_output: List[Dict[str, Any]],
+        diarization_output: List[AudioSegment],
     ) -> List[AudioSegment]:
-        """Merge ASR transcription with diarization speaker labels.
-        
-        This function aligns ASR segments with diarization segments to create
-        AudioSegment objects with both transcript text and speaker IDs.
-        If diarization is empty, creates AudioSegment objects from ASR only.
-        
-        Args:
-            asr_output: List of ASR segments with 'start', 'end', 'text' keys.
-            diarization_output: List of AudioSegment objects with speaker IDs.
-            
-        Returns:
-            List of AudioSegment objects with transcript_text populated.
-        """
+        """Merge ASR transcription with diarization speaker labels."""
         if not asr_output:
             logger.warning("Empty ASR output")
-            return diarization_output.copy() if diarization_output else []
-        
-        # If no diarization, create AudioSegment objects from ASR only
+            return list(diarization_output) if diarization_output else []
+
         if not diarization_output:
             logger.info("No diarization available - creating segments from ASR only")
-            from src.models.data_models import AudioSegment
-            segments = []
-            for asr_seg in asr_output:
-                segments.append(AudioSegment(
-                    start_time=asr_seg["start"],
-                    end_time=asr_seg["end"],
-                    transcript_text=asr_seg["text"],
-                    speaker_id="unknown"  # No speaker ID available
-                ))
-            return segments
-        
-        # Create a mapping of time ranges to speaker IDs
-        speaker_map = {}
-        for diar_seg in diarization_output:
-            # Use start time as key (rounded to nearest 0.1s for matching)
-            key = round(diar_seg.start_time, 1)
-            speaker_map[key] = diar_seg.speaker_id
-        
-        # Merge ASR segments with speaker labels
-        merged_segments = []
-        
+            return [
+                AudioSegment(
+                    start_time=seg["start"],
+                    end_time=seg["end"],
+                    transcript_text=seg["text"],
+                    speaker_id="unknown",
+                )
+                for seg in asr_output
+            ]
+
+        merged = []
         for asr_seg in asr_output:
             asr_start = asr_seg["start"]
             asr_end = asr_seg["end"]
             asr_text = asr_seg["text"]
-            
-            # Find the speaker for this time range
-            # Look for diarization segment that overlaps with ASR segment
             speaker_id = None
-            for diar_seg in diarization_output:
-                # Check for overlap
-                if (asr_start < diar_seg.end_time and asr_end > diar_seg.start_time):
-                    # Calculate overlap percentage
-                    overlap_start = max(asr_start, diar_seg.start_time)
-                    overlap_end = min(asr_end, diar_seg.end_time)
-                    overlap_duration = overlap_end - overlap_start
-                    asr_duration = asr_end - asr_start
-                    
-                    # If significant overlap (>50%), assign speaker
-                    if overlap_duration > 0.5 * asr_duration:
-                        speaker_id = diar_seg.speaker_id
+            for d in diarization_output:
+                if asr_start < d.end_time and asr_end > d.start_time:
+                    overlap_start = max(asr_start, d.start_time)
+                    overlap_end = min(asr_end, d.end_time)
+                    if (overlap_end - overlap_start) > 0.5 * (asr_end - asr_start):
+                        speaker_id = d.speaker_id
                         break
-            
-            # If no speaker found, try to find closest speaker
             if speaker_id is None:
-                # Find the diarization segment with closest start time
-                closest_seg = min(
-                    diarization_output,
-                    key=lambda s: abs(s.start_time - asr_start)
-                )
-                if abs(closest_seg.start_time - asr_start) < 2.0:  # Within 2 seconds
-                    speaker_id = closest_seg.speaker_id
-            
-            # Default to "Speaker_Unknown" if still no match
+                closest = min(diarization_output, key=lambda s: abs(s.start_time - asr_start))
+                speaker_id = closest.speaker_id if abs(closest.start_time - asr_start) < 2.0 else "Speaker_Unknown"
             if speaker_id is None:
                 speaker_id = "Speaker_Unknown"
-                logger.warning(
-                    f"Could not assign speaker for ASR segment "
-                    f"({asr_start:.2f}s - {asr_end:.2f}s)"
+            merged.append(
+                AudioSegment(
+                    start_time=round(asr_start, 3),
+                    end_time=round(asr_end, 3),
+                    speaker_id=speaker_id,
+                    transcript_text=asr_text,
+                    confidence=None,
                 )
-            
-            # Create merged segment
-            merged_segment = AudioSegment(
-                start_time=round(asr_start, 3),
-                end_time=round(asr_end, 3),
-                speaker_id=speaker_id,
-                transcript_text=asr_text,
-                confidence=None
             )
-            merged_segments.append(merged_segment)
-        
-        logger.info(f"Merged {len(merged_segments)} segments with speaker labels")
-        
-        return merged_segments
-    
+
+        logger.info("Merged %d segments with speaker labels", len(merged))
+        return merged
+
     def process_audio_with_diarization(
         self,
         audio_path: str,
         diarization_segments: List[AudioSegment],
-        language: Optional[str] = None
+        language: Optional[str] = None,
     ) -> List[AudioSegment]:
-        """Complete ASR processing with diarization labels.
-        
-        Convenience method that transcribes audio and merges with diarization.
-        
-        Args:
-            audio_path: Path to the audio file.
-            diarization_segments: List of AudioSegment objects from diarization.
-            language: Language code. If None, auto-detect.
-            
-        Returns:
-            List of AudioSegment objects with both speaker IDs and transcripts.
-        """
-        # Transcribe audio
+        """Transcribe and merge with diarization labels."""
         asr_output = self.transcribe_audio(audio_path, language)
-        
-        # Merge with diarization
-        merged_segments = self.merge_asr_diarization(asr_output, diarization_segments)
-        
-        return merged_segments
+        return self.merge_asr_diarization(asr_output, diarization_segments)

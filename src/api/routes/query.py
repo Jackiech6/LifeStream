@@ -1,4 +1,8 @@
-"""Query endpoint for semantic search."""
+"""Query endpoint for semantic search.
+
+Per guideline: ChatGPT is used only (1) per-chunk summarization during processing,
+and (2) here—exactly one call after retrieval to synthesize the answer from top-k chunks.
+"""
 
 import logging
 
@@ -6,6 +10,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from config.settings import Settings
 from src.search.semantic_search import semantic_search, SearchQuery
+from src.search.query_synthesis import synthesize_answer
 from src.memory.store_factory import create_vector_store
 from src.memory.embeddings import OpenAIEmbeddingModel
 from src.api.models.requests import QueryRequest
@@ -18,29 +23,16 @@ router = APIRouter()
 
 @router.post("/query", response_model=QueryResponse)
 async def query_memory(request: QueryRequest):
-    """Query the memory index using semantic search.
-    
-    This endpoint:
-    1. Embeds the query using OpenAI
-    2. Searches the vector store (Pinecone/FAISS)
-    3. Returns relevant chunks
-    4. Optionally synthesizes an answer using LLM
-    
-    Args:
-        request: QueryRequest with query and filters
-        
-    Returns:
-        QueryResponse with search results
-        
-    Raises:
-        HTTPException: If query fails
+    """Query the memory index and synthesize an answer.
+
+    1. Semantic retrieval: embed query, retrieve top-k chunks from vector store.
+    2. Exactly one ChatGPT call: synthesize answer using only those chunks as context.
     """
     logger.info(f"Query request: {request.query[:50]}...")
-    
+
     try:
         settings = Settings()
-        
-        # Check if required API keys are configured
+
         if not settings.pinecone_api_key:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -49,10 +41,9 @@ async def query_memory(request: QueryRequest):
         if not settings.openai_api_key:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="OpenAI API key not configured. Embeddings are unavailable."
+                detail="OpenAI API key not configured. Embeddings and synthesis unavailable."
             )
-        
-        # Initialize vector store and embedder
+
         try:
             store = create_vector_store(settings)
         except RuntimeError as e:
@@ -61,7 +52,7 @@ async def query_memory(request: QueryRequest):
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Vector store unavailable: {str(e)}"
             )
-        
+
         try:
             embedder = OpenAIEmbeddingModel(settings)
         except Exception as e:
@@ -70,8 +61,7 @@ async def query_memory(request: QueryRequest):
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Embedding model unavailable: {str(e)}"
             )
-        
-        # Convert request to SearchQuery
+
         search_query = SearchQuery(
             query=request.query,
             top_k=request.top_k,
@@ -81,24 +71,21 @@ async def query_memory(request: QueryRequest):
             source_types=None,
             speaker_ids=request.speaker_ids
         )
-        
-        # Perform semantic search
+
         results = semantic_search(search_query, store, embedder)
-        
         logger.info(f"Query returned {len(results)} results")
-        
-        # Optionally generate LLM answer (future enhancement)
-        answer = None
-        # if request.generate_answer:
-        #     answer = synthesize_answer(request.query, results, settings)
-        
+
+        answer = synthesize_answer(request.query, results, settings)
+
         return QueryResponse(
             query=request.query,
             results=results,
             answer=answer,
             total_results=len(results)
         )
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Query failed: {e}", exc_info=True)
         raise HTTPException(

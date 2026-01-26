@@ -64,6 +64,23 @@ export default function VideoUpload() {
     }
   }, [handleFileSelect]);
 
+  const getVideoDurationSeconds = (f: File): Promise<number | null> => {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(f);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.onloadedmetadata = () => {
+        URL.revokeObjectURL(url);
+        resolve(Number.isFinite(video.duration) ? video.duration : null);
+      };
+      video.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      video.src = url;
+    });
+  };
+
   const handleUpload = async () => {
     if (!file) return;
 
@@ -87,11 +104,17 @@ export default function VideoUpload() {
         }
       );
 
-      // Step 3: Confirm upload
+      // Step 3: Client-side duration (for backend diagnostics; user-reported 1.5 min vs 5.5 min)
+      const clientDuration = await getVideoDurationSeconds(file);
+      const metadata: Record<string, unknown> = {};
+      if (clientDuration != null) metadata.client_duration_seconds = clientDuration;
+
+      // Step 4: Confirm upload
       setProgress(95);
       const confirmResponse = await apiClient.confirmUpload({
         job_id: presignedResponse.job_id,
         s3_key: presignedResponse.s3_key,
+        metadata: Object.keys(metadata).length ? metadata : undefined,
       });
 
       setProgress(100);
@@ -114,15 +137,15 @@ export default function VideoUpload() {
 
   return (
     <div className="w-full max-w-2xl mx-auto p-6">
-      <h2 className="text-2xl font-bold mb-6">Upload Video</h2>
+      <h2 className="text-2xl font-bold bg-gradient-to-r from-primary-700 to-primary-500 bg-clip-text text-transparent mb-6">Upload Video</h2>
 
       {/* Drag and Drop Area */}
       <div
-        className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
+        className={`border-2 border-dashed rounded-2xl p-12 text-center transition-all duration-300 ${
           dragActive
-            ? 'border-primary-500 bg-primary-50'
-            : 'border-gray-300 hover:border-primary-400'
-        } ${uploading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
+            ? 'border-primary-500 bg-primary-50/80'
+            : 'border-gray-300 hover:border-primary-400 hover:bg-white/60'
+        } ${uploading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'} bg-white/50 backdrop-blur-sm`}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
         onDragOver={handleDrag}
@@ -180,9 +203,9 @@ export default function VideoUpload() {
             <span>Uploading...</span>
             <span>{Math.round(progress)}%</span>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
+          <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
             <div
-              className="bg-primary-600 h-2 rounded-full transition-all duration-300"
+              className="bg-gradient-to-r from-primary-600 to-primary-500 h-2.5 rounded-full transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -191,7 +214,7 @@ export default function VideoUpload() {
 
       {/* Error Message */}
       {error && (
-        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+        <div className="mt-4 p-4 bg-red-50/90 border border-red-200 rounded-xl text-red-700 text-sm">
           {error}
         </div>
       )}
@@ -200,7 +223,7 @@ export default function VideoUpload() {
       {file && !uploading && (
         <button
           onClick={handleUpload}
-          className="mt-6 w-full bg-primary-600 text-white py-3 px-6 rounded-lg font-semibold hover:bg-primary-700 transition-colors"
+          className="mt-6 w-full bg-gradient-to-r from-primary-600 to-primary-500 text-white py-3 px-6 rounded-xl font-semibold hover:from-primary-700 hover:to-primary-600 shadow-md hover:shadow-lg transition-all duration-300"
         >
           Upload Video
         </button>

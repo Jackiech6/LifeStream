@@ -82,52 +82,41 @@ export default function ChatInterface() {
 
   return (
     <div className="flex flex-col h-screen max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="p-4 border-b bg-white">
-        <h2 className="text-2xl font-bold mb-4">Query Memory</h2>
-
-        {/* Filters */}
+      <div className="p-4 sm:p-5 border-b bg-white/90 backdrop-blur-sm border-gray-200/80 shadow-sm">
+        <h2 className="text-2xl font-bold bg-gradient-to-r from-primary-700 to-primary-500 bg-clip-text text-transparent mb-4">Query Memory</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Date
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
             <input
               type="date"
               value={filters.date}
               onChange={(e) => setFilters({ ...filters, date: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Video ID
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Video ID</label>
             <input
               type="text"
               value={filters.video_id}
               onChange={(e) => setFilters({ ...filters, video_id: e.target.value })}
               placeholder="Optional"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Top K Results
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Top K Results</label>
             <input
               type="number"
               min="1"
               max="50"
               value={filters.top_k}
               onChange={(e) => setFilters({ ...filters, top_k: parseInt(e.target.value) || 5 })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Min Score
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Min Score</label>
             <input
               type="number"
               min="0"
@@ -135,17 +124,16 @@ export default function ChatInterface() {
               step="0.1"
               value={filters.min_score}
               onChange={(e) => setFilters({ ...filters, min_score: parseFloat(e.target.value) || 0 })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
             />
           </div>
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
-          <div className="text-center text-gray-500 mt-8">
-            <p className="text-lg">Start a conversation with your memory</p>
+          <div className="text-center text-gray-500 mt-12 max-w-md mx-auto">
+            <p className="text-lg font-medium">Start a conversation with your memory</p>
             <p className="text-sm mt-2">Ask questions about your videos, meetings, or activities</p>
           </div>
         )}
@@ -156,10 +144,10 @@ export default function ChatInterface() {
             className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-3xl rounded-lg p-4 ${
+              className={`max-w-3xl rounded-2xl p-4 shadow-sm ${
                 message.type === 'user'
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-white border border-gray-200'
+                  ? 'bg-gradient-to-r from-primary-600 to-primary-500 text-white'
+                  : 'bg-white/90 backdrop-blur-sm border border-gray-200'
               }`}
             >
               <p className="whitespace-pre-wrap">{message.content}</p>
@@ -171,10 +159,10 @@ export default function ChatInterface() {
               {message.results && message.results.length > 0 && (
                 <div className="mt-4 space-y-3">
                   <p className="text-sm font-semibold mb-2">Search Results:</p>
-                  {message.results.map((result, index) => (
+                  {message.results.map((result) => (
                     <div
                       key={result.chunk_id}
-                      className="p-3 bg-gray-50 rounded border border-gray-200 hover:border-primary-300 transition-colors"
+                      className="p-3 bg-gray-50/80 rounded-xl border border-gray-200 hover:border-primary-300 transition-all"
                     >
                       <div className="flex justify-between items-start mb-2">
                         <div className="text-xs text-gray-500">
@@ -202,9 +190,9 @@ export default function ChatInterface() {
 
         {loading && (
           <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-lg p-4">
-              <div className="flex items-center space-x-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600"></div>
+            <div className="bg-white/90 border border-gray-200 rounded-2xl p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-primary-600 border-t-transparent" />
                 <span className="text-sm text-gray-500">Searching...</span>
               </div>
             </div>
@@ -212,21 +200,20 @@ export default function ChatInterface() {
         )}
       </div>
 
-      {/* Input */}
-      <div className="p-4 border-t bg-white">
-        <form onSubmit={handleSubmit} className="flex gap-2">
+      <div className="p-4 border-t bg-white/90 backdrop-blur-sm border-gray-200/80">
+        <form onSubmit={handleSubmit} className="flex gap-2 max-w-4xl mx-auto">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Ask a question about your videos..."
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
             disabled={loading}
           />
           <button
             type="submit"
             disabled={!query.trim() || loading}
-            className="bg-primary-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-gradient-to-r from-primary-600 to-primary-500 text-white px-6 py-2.5 rounded-xl font-semibold hover:from-primary-700 hover:to-primary-600 shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Send
           </button>

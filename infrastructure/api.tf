@@ -19,7 +19,7 @@ resource "aws_lambda_function" "api" {
       AWS_S3_BUCKET_NAME       = aws_s3_bucket.videos.id
       AWS_SQS_QUEUE_URL        = aws_sqs_queue.video_processing.id
       AWS_SQS_DLQ_URL          = aws_sqs_queue.video_processing_dlq.id
-      # AWS_REGION is automatically provided by Lambda - do not set it manually
+      JOBS_TABLE_NAME          = aws_dynamodb_table.jobs.name
       PINECONE_INDEX_NAME      = var.pinecone_index_name != "" ? var.pinecone_index_name : "lifestream-dev"
       PINECONE_ENVIRONMENT     = var.pinecone_environment != "" ? var.pinecone_environment : "us-east-1"
       LLM_MODEL                = "gpt-4o"
@@ -102,6 +102,11 @@ resource "aws_iam_role_policy" "lambda_api" {
           aws_sqs_queue.video_processing.arn,
           aws_sqs_queue.video_processing_dlq.arn
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan", "dynamodb:UpdateItem"]
+        Resource = aws_dynamodb_table.jobs.arn
       },
       {
         Effect = "Allow"

@@ -52,16 +52,19 @@ def sample_sqs_event():
 
 def test_lambda_handler_sqs_event(sample_sqs_event, mock_s3_service, mock_sqs_service):
     """lambda_handler should process SQS events."""
-    # Mock video download
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
-        tmp_path = tmp_file.name
-        tmp_file.write(b"fake video data")
+    def _fake_download(s3_key, local_path, bucket=None):
+        p = Path(local_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"fake video data")
+        return True
 
-    mock_s3_service.download_file.return_value = Path(tmp_path)
+    mock_s3_service.get_file_metadata.return_value = {"etag": "abc123"}
+    mock_s3_service.download_file.side_effect = _fake_download
     mock_s3_service.bucket_name = "test-bucket"
 
-    # Mock process_video to return a summary
-    with patch("src.workers.lambda_handler.process_video") as mock_process:
+    with patch("src.workers.lambda_handler.is_processed", return_value=False), \
+         patch("src.workers.lambda_handler.mark_processed"), \
+         patch("src.workers.lambda_handler.process_video") as mock_process:
         from src.models.data_models import DailySummary, TimeBlock
 
         mock_summary = DailySummary(
@@ -71,17 +74,12 @@ def test_lambda_handler_sqs_event(sample_sqs_event, mock_s3_service, mock_sqs_se
         )
         mock_process.return_value = mock_summary
 
-        # Mock file operations
-        with patch("pathlib.Path.write_text") as mock_write:
-            with patch("pathlib.Path.read_text", return_value="test content"):
-                result = lambda_handler(sample_sqs_event, None)
+        with patch("pathlib.Path.write_text"), patch("pathlib.Path.read_text", return_value="test"):
+            result = lambda_handler(sample_sqs_event, None)
 
-                assert result["statusCode"] == 200
-                assert "results" in result
-                assert len(result["results"]) == 1
-
-    # Cleanup
-    Path(tmp_path).unlink(missing_ok=True)
+        assert result["statusCode"] == 200
+        assert "results" in result
+        assert len(result["results"]) == 1
 
 
 def test_lambda_handler_direct_invocation(mock_s3_service):
@@ -92,14 +90,16 @@ def test_lambda_handler_direct_invocation(mock_s3_service):
         "video_s3_bucket": "test-bucket",
     }
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
-        tmp_path = tmp_file.name
-        tmp_file.write(b"fake video data")
+    def _fake_download(s3_key, local_path, bucket=None):
+        p = Path(local_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"fake video data")
+        return True
 
-    mock_s3_service.download_file.return_value = Path(tmp_path)
+    mock_s3_service.get_file_metadata.return_value = {"etag": "xyz"}
+    mock_s3_service.download_file.side_effect = _fake_download
     mock_s3_service.bucket_name = "test-bucket"
 
-    # Mock settings with SQS URL
     with patch("src.workers.lambda_handler.Settings") as mock_settings_class:
         mock_settings = mock_settings_class.return_value
         mock_settings.aws_sqs_queue_url = "https://sqs.us-east-1.amazonaws.com/123456789/test-queue"
@@ -107,7 +107,9 @@ def test_lambda_handler_direct_invocation(mock_s3_service):
         mock_settings.aws_s3_bucket_name = "test-bucket"
         mock_settings.aws_region = "us-east-1"
 
-        with patch("src.workers.lambda_handler.process_video") as mock_process:
+        with patch("src.workers.lambda_handler.is_processed", return_value=False), \
+             patch("src.workers.lambda_handler.mark_processed"), \
+             patch("src.workers.lambda_handler.process_video") as mock_process:
             from src.models.data_models import DailySummary, TimeBlock
 
             mock_summary = DailySummary(
@@ -117,13 +119,10 @@ def test_lambda_handler_direct_invocation(mock_s3_service):
             )
             mock_process.return_value = mock_summary
 
-            with patch("pathlib.Path.write_text"):
-                with patch("pathlib.Path.read_text", return_value="test"):
-                    result = lambda_handler(event, None)
+            with patch("pathlib.Path.write_text"), patch("pathlib.Path.read_text", return_value="test"):
+                result = lambda_handler(event, None)
 
-                    assert result["statusCode"] == 200
-
-    Path(tmp_path).unlink(missing_ok=True)
+            assert result["statusCode"] == 200
 
 
 def test_lambda_handler_error_handling(mock_s3_service, mock_sqs_service):
@@ -134,9 +133,11 @@ def test_lambda_handler_error_handling(mock_s3_service, mock_sqs_service):
         "video_s3_bucket": "test-bucket",
     }
 
+    mock_s3_service.get_file_metadata.return_value = {"etag": "e1"}
     mock_s3_service.download_file.side_effect = Exception("Download failed")
 
-    result = lambda_handler(event, None)
+    with patch("src.workers.lambda_handler.is_processed", return_value=False):
+        result = lambda_handler(event, None)
 
     assert result["statusCode"] == 500
     assert "error" in result
@@ -156,17 +157,45 @@ def test_process_video_job_sends_to_dlq_on_failure():
     settings.aws_sqs_dlq_url = "https://sqs.us-east-1.amazonaws.com/123456789/test-dlq"
     settings.aws_region = "us-east-1"
 
-    with patch("src.workers.lambda_handler.S3Service") as mock_s3, \
+    mock_s3 = MagicMock()
+    mock_s3.get_file_metadata.return_value = {"etag": "e1"}
+    mock_s3.download_file.return_value = True
+
+    with patch("src.workers.lambda_handler.S3Service", return_value=mock_s3), \
+         patch("src.workers.lambda_handler.is_processed", return_value=False), \
          patch("src.workers.lambda_handler.process_video_from_s3") as mock_proc, \
          patch("src.messaging.sqs_service.SQSService.send_to_dlq") as mock_send_to_dlq:
 
-        # Force processing to fail
         mock_proc.side_effect = Exception("processing failed")
 
         result = process_video_job(job, settings)
 
         assert result["statusCode"] == 500
         mock_send_to_dlq.assert_called_once()
+
+
+def test_process_video_job_skips_when_idempotent(mock_s3_service, mock_sqs_service):
+    """process_video_job returns 200 and skips processing when (s3_key, etag) already processed."""
+    job = ProcessingJob(
+        job_id="idem-job",
+        video_s3_key="uploads/video.mp4",
+        video_s3_bucket="test-bucket",
+    )
+    settings = Settings()
+    settings.aws_sqs_queue_url = "https://sqs.us-east-1.amazonaws.com/123/queue"
+    settings.aws_sqs_dlq_url = "https://sqs.us-east-1.amazonaws.com/123/dlq"
+    settings.aws_region = "us-east-1"
+    settings.aws_s3_bucket_name = "test-bucket"
+
+    mock_s3_service.get_file_metadata.return_value = {"etag": "abc123"}
+
+    with patch("src.workers.lambda_handler.is_processed", return_value=True):
+        result = process_video_job(job, settings)
+
+    assert result["statusCode"] == 200
+    assert result.get("skipped_idempotent") is True
+    assert result.get("status") == "skipped_idempotent"
+    mock_s3_service.download_file.assert_not_called()
 
 
 def test_process_video_from_s3(mock_s3_service):
@@ -187,13 +216,16 @@ def test_process_video_from_s3(mock_s3_service):
         )
         mock_process.return_value = mock_summary
 
+        timings = {}
         summary = process_video_from_s3(
             s3_bucket="test-bucket",
             s3_key="uploads/video.mp4",
             local_video_path=tmp_path,
+            timings=timings,
         )
 
         assert summary.video_source == "s3://test-bucket/uploads/video.mp4"
         mock_process.assert_called_once()
+        assert mock_process.call_args[1]["timings"] is timings
 
     Path(tmp_path).unlink(missing_ok=True)

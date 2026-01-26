@@ -73,8 +73,8 @@ export default function SummaryViewer({ jobId }: SummaryViewerProps) {
 
   if (loading) {
     return (
-      <div className="p-6 text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
+      <div className="p-8 text-center bg-white/60 rounded-2xl border border-gray-100 backdrop-blur-sm">
+        <div className="animate-spin rounded-full h-12 w-12 border-2 border-primary-600 border-t-transparent mx-auto" />
         <p className="mt-4 text-gray-500">Loading summary...</p>
       </div>
     );
@@ -83,7 +83,7 @@ export default function SummaryViewer({ jobId }: SummaryViewerProps) {
   if (error) {
     return (
       <div className="p-6">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+        <div className="bg-red-50/90 border border-red-200 rounded-xl p-4">
           <p className="text-red-700">{error}</p>
         </div>
       </div>
@@ -100,9 +100,9 @@ export default function SummaryViewer({ jobId }: SummaryViewerProps) {
 
   return (
     <div className="w-full max-w-4xl mx-auto p-6">
-      <div className="mb-6 flex justify-between items-center">
+      <div className="mb-6 flex flex-wrap justify-between items-start gap-4 bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-100 p-6 shadow-lg">
         <div>
-          <h2 className="text-2xl font-bold mb-2">Daily Summary</h2>
+          <h2 className="text-2xl font-bold bg-gradient-to-r from-primary-700 to-primary-500 bg-clip-text text-transparent mb-2">Daily Summary</h2>
           <div className="text-sm text-gray-500 space-y-1">
             <p>Date: {format(new Date(summary.date), 'PP')}</p>
             <p>Source: {summary.video_source}</p>
@@ -117,21 +117,20 @@ export default function SummaryViewer({ jobId }: SummaryViewerProps) {
         </div>
         <button
           onClick={handleDownload}
-          className="bg-primary-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors"
+          className="bg-gradient-to-r from-primary-600 to-primary-500 text-white py-2.5 px-5 rounded-xl font-semibold hover:from-primary-700 hover:to-primary-600 shadow-md hover:shadow-lg transition-all"
         >
           Download Markdown
         </button>
       </div>
 
-      {/* Time Blocks Navigation */}
       {summary.time_blocks && summary.time_blocks.length > 0 && (
-        <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">Time Blocks</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div className="mb-6 p-5 bg-white/70 backdrop-blur-sm rounded-2xl border border-gray-100 shadow">
+          <h3 className="font-semibold text-gray-900 mb-3">Time Blocks</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {summary.time_blocks.map((block, index) => (
               <div
                 key={index}
-                className="p-3 bg-white rounded border border-gray-200 hover:border-primary-300 transition-colors"
+                className="p-3 bg-white rounded-xl border border-gray-200 hover:border-primary-300 hover:shadow-sm transition-all"
               >
                 <div className="text-sm font-semibold text-primary-600">
                   {block.start_time} - {block.end_time}
@@ -148,10 +147,9 @@ export default function SummaryViewer({ jobId }: SummaryViewerProps) {
         </div>
       )}
 
-      {/* Action Items */}
       {summary.time_blocks.some((block) => block.action_items && block.action_items.length > 0) && (
-        <div className="mb-6 p-4 bg-blue-50 rounded-lg">
-          <h3 className="font-semibold mb-3">Action Items</h3>
+        <div className="mb-6 p-5 bg-primary-50/70 rounded-2xl border border-primary-100">
+          <h3 className="font-semibold text-gray-900 mb-3">Action Items</h3>
           <ul className="space-y-2">
             {summary.time_blocks.flatMap((block, blockIndex) =>
               (block.action_items || []).map((item, itemIndex) => (
@@ -165,8 +163,7 @@ export default function SummaryViewer({ jobId }: SummaryViewerProps) {
         </div>
       )}
 
-      {/* Markdown Content */}
-      <div className="prose prose-lg max-w-none bg-white p-6 rounded-lg border border-gray-200">
+      <div className="prose prose-lg max-w-none bg-white/80 backdrop-blur-sm p-6 sm:p-8 rounded-2xl border border-gray-100 shadow-lg">
         <ReactMarkdown>{summary.summary_markdown}</ReactMarkdown>
       </div>
     </div>

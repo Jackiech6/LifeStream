@@ -152,8 +152,23 @@ async def confirm_upload(request: ConfirmUploadRequest):
     Raises:
         HTTPException: If file validation or job creation fails
     """
-    logger.info(f"Confirming upload for job {request.job_id}: {request.s3_key}")
-    
+    logger.info("Confirming upload for job %s: %s", request.job_id, request.s3_key)
+    if not (request.job_id and request.job_id.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="job_id is required",
+        )
+    if not (request.s3_key and request.s3_key.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="s3_key is required",
+        )
+    if not request.s3_key.startswith("uploads/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="s3_key must start with uploads/",
+        )
+
     try:
         # Initialize services
         settings = Settings()
@@ -208,12 +223,44 @@ async def confirm_upload(request: ConfirmUploadRequest):
             # Validation is optional - log warning but continue
             logger.debug(f"Could not validate file signature (non-blocking): {e}")
         
-        # Create processing job using the existing S3 file
-        job = video_service.create_job_from_s3(
-            job_id=request.job_id,
-            s3_key=request.s3_key,
-            metadata=request.metadata
+        # Option A: Create queued job in DynamoDB before enqueueing so GET /status
+        # never returns 404 right after confirm.
+        etag = (file_metadata.get("etag") or "").strip().strip('"') or None
+        bucket_name = settings.aws_s3_bucket_name or getattr(
+            s3_service, "_bucket_name", None
         )
+        if not bucket_name:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="S3 bucket not configured"
+            )
+        from src.utils.jobs_store import create_job, delete_job
+        if settings.jobs_table_name:
+            create_job(
+                request.job_id,
+                table_name=settings.jobs_table_name,
+                region=settings.aws_region,
+                s3_key=request.s3_key,
+                s3_bucket=bucket_name,
+                etag=etag,
+            )
+        
+        # Enqueue to SQS (retries inside create_job_from_s3). On failure, remove orphan job.
+        try:
+            job = video_service.create_job_from_s3(
+                job_id=request.job_id,
+                s3_key=request.s3_key,
+                metadata=request.metadata,
+            )
+        except Exception as enq_err:
+            if settings.jobs_table_name:
+                delete_job(
+                    request.job_id,
+                    table_name=settings.jobs_table_name,
+                    region=settings.aws_region,
+                )
+            logger.error("Enqueue failed after creating job; deleted orphan %s: %s", request.job_id, enq_err)
+            raise
         
         # Estimate completion time (rough estimate: 1 minute per 10 minutes of video)
         estimated_completion = datetime.utcnow() + timedelta(minutes=30)

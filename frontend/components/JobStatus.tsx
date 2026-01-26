@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { apiClient } from '@/lib/api';
 import { useAppStore } from '@/lib/store';
 import { format } from 'date-fns';
@@ -17,15 +17,40 @@ const STAGES = [
   { id: 'failed', label: 'Failed', icon: '❌' },
 ];
 
+// Pipeline sub-stages (order matches backend STAGE_ORDER for progress)
+const PIPELINE_STAGES = [
+  { id: 'started', label: 'Started' },
+  { id: 'download', label: 'Downloading video' },
+  { id: 'audio_extraction', label: 'Extracting audio' },
+  { id: 'diarization', label: 'Speaker diarization' },
+  { id: 'asr', label: 'Transcription (ASR)' },
+  { id: 'scene_detection', label: 'Scene detection' },
+  { id: 'keyframes', label: 'Keyframes' },
+  { id: 'sync', label: 'Synchronizing' },
+  { id: 'summarization', label: 'Summarizing' },
+  { id: 'upload', label: 'Uploading results' },
+  { id: 'indexing', label: 'Indexing memory' },
+  { id: 'completed', label: 'Complete' },
+];
+
+const QUEUED_TOO_LONG_MS = 90_000; // 90s
+
+function formatStageLabel(stageId: string): string {
+  const found = PIPELINE_STAGES.find((s) => s.id === stageId);
+  return found ? found.label : stageId.replace(/_/g, ' ');
+}
+
 export default function JobStatus({ jobId }: JobStatusProps) {
   const { getJob, updateJobStatus } = useAppStore();
   const [polling, setPolling] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const startedAt = useRef<number>(Date.now());
 
   const job = getJob(jobId);
 
   useEffect(() => {
     if (!jobId) return;
+    startedAt.current = Date.now();
 
     const fetchStatus = async () => {
       try {
@@ -57,7 +82,8 @@ export default function JobStatus({ jobId }: JobStatusProps) {
 
   if (!job) {
     return (
-      <div className="p-6 text-center">
+      <div className="p-8 text-center bg-white/60 rounded-2xl border border-gray-100">
+        <div className="animate-spin rounded-full h-10 w-10 border-2 border-primary-600 border-t-transparent mx-auto mb-3" />
         <p className="text-gray-500">Loading job status...</p>
       </div>
     );
@@ -69,12 +95,12 @@ export default function JobStatus({ jobId }: JobStatusProps) {
   return (
     <div className="w-full max-w-4xl mx-auto p-6">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold mb-2">Job Status</h2>
-        <p className="text-sm text-gray-500">Job ID: {jobId}</p>
+        <h2 className="text-2xl font-bold bg-gradient-to-r from-primary-700 to-primary-500 bg-clip-text text-transparent mb-2">Job Status</h2>
+        <p className="text-sm text-gray-500 font-mono">Job ID: {jobId}</p>
       </div>
 
       {/* Status Timeline */}
-      <div className="mb-8">
+      <div className="mb-8 bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-100 p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
           {STAGES.map((stage, index) => {
             const isActive = index <= currentStageIndex;
@@ -83,18 +109,14 @@ export default function JobStatus({ jobId }: JobStatusProps) {
             return (
               <div key={stage.id} className="flex-1 flex flex-col items-center">
                 <div
-                  className={`w-12 h-12 rounded-full flex items-center justify-center text-2xl mb-2 ${
-                    isActive
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-200 text-gray-400'
-                  } ${isCurrent ? 'ring-4 ring-primary-200' : ''}`}
+                  className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl mb-2 transition-all ${
+                    isActive ? 'bg-primary-600 text-white shadow-md' : 'bg-gray-200 text-gray-400'
+                  } ${isCurrent ? 'ring-4 ring-primary-200 ring-offset-2' : ''}`}
                 >
                   {stage.icon}
                 </div>
                 <span
-                  className={`text-sm font-medium ${
-                    isActive ? 'text-primary-600' : 'text-gray-400'
-                  }`}
+                  className={`text-sm font-medium ${isActive ? 'text-primary-600' : 'text-gray-400'}`}
                 >
                   {stage.label}
                 </span>
@@ -103,35 +125,60 @@ export default function JobStatus({ jobId }: JobStatusProps) {
           })}
         </div>
 
-        {/* Progress Bar */}
-        {status.progress !== undefined && status.status === 'processing' && (
-          <div className="mt-4">
-            <div className="flex justify-between text-sm mb-2">
-              <span>Processing...</span>
-              <span>{Math.round(status.progress * 100)}%</span>
+        {status.status === 'processing' && (
+          <div className="mt-5 space-y-4">
+            <div>
+              <div className="flex justify-between text-sm mb-2">
+                <span className="font-medium text-gray-700">
+                  {status.current_stage ? (
+                    <>Current step: <span className="text-primary-700">{formatStageLabel(status.current_stage)}</span></>
+                  ) : (
+                    'Processing…'
+                  )}
+                </span>
+                <span className="font-semibold text-primary-600 tabular-nums">
+                  {status.progress != null ? `${Math.round(status.progress * 100)}%` : '—'}
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-primary-600 to-primary-500 h-3 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.min(100, (status.progress ?? 0) * 100)}%` }}
+                />
+              </div>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-primary-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${status.progress * 100}%` }}
-              />
+            {/* Pipeline steps: show completed + current */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+              {PIPELINE_STAGES.map((stage) => {
+                const isCurrent = status.current_stage === stage.id;
+                const idx = PIPELINE_STAGES.findIndex((s) => s.id === stage.id);
+                const currentIdx = status.current_stage
+                  ? PIPELINE_STAGES.findIndex((s) => s.id === status.current_stage)
+                  : -1;
+                const isDone = currentIdx >= 0 && idx < currentIdx;
+                return (
+                  <div
+                    key={stage.id}
+                    className={`px-3 py-2 rounded-lg text-xs font-medium ${
+                      isCurrent
+                        ? 'bg-primary-100 text-primary-800 ring-1 ring-primary-300'
+                        : isDone
+                        ? 'bg-gray-100 text-gray-600'
+                        : 'bg-gray-50 text-gray-400'
+                    }`}
+                  >
+                    {isDone && <span className="mr-1.5">✓</span>}
+                    {stage.label}
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        )}
-
-        {/* Current Stage */}
-        {status.current_stage && (
-          <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <p className="text-sm text-blue-700">
-              <span className="font-semibold">Current Stage:</span> {status.current_stage}
-            </p>
           </div>
         )}
       </div>
 
-      {/* Error Display */}
       {status.error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+        <div className="mb-6 p-4 bg-red-50/90 border border-red-200 rounded-xl">
           <p className="text-sm font-semibold text-red-700 mb-1">Error:</p>
           <p className="text-sm text-red-600">{status.error}</p>
         </div>
@@ -153,18 +200,17 @@ export default function JobStatus({ jobId }: JobStatusProps) {
         )}
       </div>
 
-      {/* Actions */}
       {status.status === 'completed' && (
-        <div className="flex gap-4">
+        <div className="flex flex-wrap gap-3">
           <Link
             href={`/jobs/${jobId}/summary`}
-            className="bg-primary-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-primary-700 transition-colors"
+            className="bg-gradient-to-r from-primary-600 to-primary-500 text-white py-2.5 px-6 rounded-xl font-semibold hover:from-primary-700 hover:to-primary-600 shadow-md hover:shadow-lg transition-all"
           >
             View Summary
           </Link>
           <Link
             href="/chat"
-            className="bg-gray-200 text-gray-700 py-2 px-6 rounded-lg font-semibold hover:bg-gray-300 transition-colors"
+            className="bg-white border border-gray-200 text-gray-700 py-2.5 px-6 rounded-xl font-semibold hover:bg-gray-50 hover:border-gray-300 transition-all"
           >
             Query Memory
           </Link>
@@ -178,8 +224,21 @@ export default function JobStatus({ jobId }: JobStatusProps) {
         </div>
       )}
 
+      {status.status === 'queued' &&
+        Date.now() - startedAt.current > QUEUED_TOO_LONG_MS && (
+          <div className="mt-4 p-4 bg-amber-50/90 border border-amber-200 rounded-xl text-amber-800 text-sm">
+            <p className="font-semibold mb-1">Still queued?</p>
+            <p>
+              Processing may have run under a different job. Try uploading again
+              (we now prefer your job ID when S3 and confirm both trigger), or
+              check the API <code className="bg-amber-100 px-1 rounded">/api/v1/status</code> for
+              other recent jobs.
+            </p>
+          </div>
+        )}
+
       {error && (
-        <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-700">
+        <div className="mt-4 p-4 bg-amber-50/90 border border-amber-200 rounded-xl text-amber-800">
           {error}
         </div>
       )}

@@ -13,6 +13,7 @@ from typing import List, Protocol
 import numpy as np
 
 from config.settings import Settings
+from src.utils.openai_retry import with_429_retry
 
 logger = logging.getLogger(__name__)
 
@@ -49,25 +50,27 @@ class OpenAIEmbeddingModel:
             self._client = None
 
     def _embed_batch(self, texts: List[str]) -> np.ndarray:
-        """Embed a single batch of texts with retry logic."""
+        """Embed a single batch of texts. Uses 429 retry for rate limits, plus retries for other transient errors."""
         if not self._client:
             raise RuntimeError(
                 "OpenAI client not initialized. "
                 "Ensure OPENAI_API_KEY is set in the environment."
             )
 
+        def _create() -> np.ndarray:
+            logger.debug("Requesting embeddings for batch of size %d", len(texts))
+            response = self._client.embeddings.create(
+                model=self.model_name,
+                input=texts,
+            )
+            vectors = [item.embedding for item in response.data]
+            return np.array(vectors, dtype=float)
+
         attempt = 0
         delay = 1.0
-
         while True:
             try:
-                logger.debug("Requesting embeddings for batch of size %d", len(texts))
-                response = self._client.embeddings.create(
-                    model=self.model_name,
-                    input=texts,
-                )
-                vectors = [item.embedding for item in response.data]
-                return np.array(vectors, dtype=float)
+                return with_429_retry(_create, max_retries=8, log=logger)
             except Exception as exc:
                 attempt += 1
                 if attempt > self.max_retries:

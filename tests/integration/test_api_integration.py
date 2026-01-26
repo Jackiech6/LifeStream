@@ -34,12 +34,10 @@ def test_api_structure():
     """Test that API structure is correct."""
     response = client.get("/openapi.json")
     assert response.status_code == 200
-    
     schema = response.json()
-    
-    # Check that all expected endpoints exist
     paths = schema["paths"]
-    assert "/api/v1/upload" in paths
+    assert "/api/v1/upload/presigned-url" in paths
+    assert "/api/v1/upload/confirm" in paths
     assert "/api/v1/status/{job_id}" in paths
     assert "/api/v1/summary/{job_id}" in paths
     assert "/api/v1/query" in paths
@@ -47,18 +45,14 @@ def test_api_structure():
 
 
 def test_cors_headers():
-    """Test that CORS headers are configured."""
-    response = client.options("/api/v1/upload")
-    # CORS is configured in middleware
-    # Actual CORS behavior would need browser testing
+    """Test that CORS is configured (OPTIONS on API path)."""
+    response = client.options("/api/v1/upload/presigned-url")
+    assert response.status_code in [200, 405]
 
 
 def test_error_handling():
     """Test that errors are handled gracefully."""
-    # Test invalid endpoint
     response = client.get("/api/v1/nonexistent")
     assert response.status_code == 404
-    
-    # Test invalid method
-    response = client.get("/api/v1/upload")
-    assert response.status_code == 405  # Method not allowed
+    response = client.get("/api/v1/upload/presigned-url")
+    assert response.status_code == 405  # POST only; GET method not allowed

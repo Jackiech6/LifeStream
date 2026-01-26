@@ -2,229 +2,246 @@
 
 This module handles synchronization of audio segments and video frames
 into time-aligned contexts for summarization.
+
+Chunking is time-based: contiguous 5-minute windows across the full video
+timeline. Scene detection does not affect chunk boundaries; it is used only
+to enrich each 5-minute chunk with keyframes from overlapping scenes.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, Tuple
 
 from src.models.data_models import AudioSegment, VideoFrame, SynchronizedContext
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+# Default chunk size: 5 minutes per project specification
+CHUNK_SIZE_SECONDS = 300
+
 
 class ContextSynchronizer:
-    """Handles synchronization of audio segments and video frames."""
-    
+    """Handles synchronization of audio segments and video frames into
+    contiguous 5-minute time-based chunks. Keyframes from overlapping
+    scenes enrich each chunk as visual context.
+    """
+
     def __init__(self, settings: Optional[Settings] = None):
         """Initialize ContextSynchronizer.
-        
+
         Args:
             settings: Application settings. If None, creates default settings.
         """
         self.settings = settings or Settings()
-        self.chunk_size = self.settings.chunk_size_seconds  # Default: 300 seconds (5 minutes)
-    
+        self.chunk_size = getattr(
+            self.settings, "chunk_size_seconds", CHUNK_SIZE_SECONDS
+        )
+
     def synchronize_contexts(
         self,
         audio_segments: List[AudioSegment],
         video_frames: List[VideoFrame],
         chunk_size: Optional[float] = None,
-        scene_boundaries: Optional[List[float]] = None
+        scene_boundaries: Optional[List[float]] = None,
+        video_duration: Optional[float] = None,
     ) -> List[SynchronizedContext]:
-        """Synchronize audio segments and video frames into time-aligned contexts.
-        
-        This function creates SynchronizedContext objects based on scene boundaries
-        (if provided) or fixed time windows. According to project guidelines, summary
-        chunks should be based on scene detection boundaries.
-        
+        """Create time-aligned contexts as contiguous 5-minute chunks.
+
+        Chunks are fixed-duration windows (default 5 minutes) across the full
+        video timeline. The final chunk may be shorter if the video ends
+        before the next boundary. Scene detection does not define chunk
+        boundaries; scenes are used only to attach overlapping keyframes
+        to each chunk.
+
         Args:
             audio_segments: List of AudioSegment objects with timestamps.
-            video_frames: List of VideoFrame objects with timestamps.
-            chunk_size: Size of time window in seconds (used only if scene_boundaries is None).
-            scene_boundaries: List of scene boundary timestamps in seconds. If provided,
-                            contexts are created based on these boundaries instead of fixed chunks.
-            
+            video_frames: List of VideoFrame objects (keyframes from scene
+                detection) with timestamps.
+            chunk_size: Size of each chunk in seconds (default 300).
+            scene_boundaries: Scene boundary timestamps. Used only to assign
+                keyframes to chunks by scene overlap.
+            video_duration: Total video duration in seconds. Used for
+                timeline end and scene intervals. If None, derived from
+                audio/video timestamps.
+
         Returns:
-            List of SynchronizedContext objects, one for each scene/time window.
-            
-        Raises:
-            ValueError: If no audio segments or video frames provided.
+            List of SynchronizedContext objects, one per 5-minute window.
         """
-        if not audio_segments and not video_frames:
-            raise ValueError("No audio segments or video frames provided - cannot synchronize contexts")
-        
-        # Find the overall time range
-        all_timestamps = []
+        size = chunk_size if chunk_size is not None else self.chunk_size
+
+        # Timeline: [0, end_time]
+        all_timestamps: List[float] = []
         if audio_segments:
-            all_timestamps.extend([seg.start_time for seg in audio_segments])
-            all_timestamps.extend([seg.end_time for seg in audio_segments])
+            all_timestamps.extend([s.start_time for s in audio_segments])
+            all_timestamps.extend([s.end_time for s in audio_segments])
         if video_frames:
-            all_timestamps.extend([frame.timestamp for frame in video_frames])
-        
-        if not all_timestamps:
-            raise ValueError("No timestamps found in audio or video data - cannot synchronize contexts")
-        
-        start_time = min(all_timestamps)
-        end_time = max(all_timestamps)
-        
-        # Use scene boundaries if provided (project guideline: chunks based on scene detection)
-        if scene_boundaries is not None and len(scene_boundaries) > 0:
-            logger.info(f"Synchronizing contexts based on {len(scene_boundaries)} scene boundaries: "
-                       f"{start_time:.2f}s to {end_time:.2f}s")
-            
-            # Create boundaries list: [start_time, scene_boundaries..., end_time]
-            boundaries = [start_time] + sorted(scene_boundaries) + [end_time]
-            # Remove duplicates and ensure sorted
-            boundaries = sorted(list(set(boundaries)))
-            
-            contexts = []
-            for i in range(len(boundaries) - 1):
-                current_start = boundaries[i]
-                current_end = boundaries[i + 1]
-                
-                # Find audio segments in this scene window
-                window_audio_segments = [
-                    seg for seg in audio_segments
-                    if self._segment_overlaps_window(seg, current_start, current_end)
-                ]
-                
-                # Find video frames in this scene window
-                window_video_frames = [
-                    frame for frame in video_frames
-                    if current_start <= frame.timestamp < current_end
-                ]
-                
-                # Create context for each scene (even if empty, to maintain scene structure)
-                context = SynchronizedContext(
-                    start_timestamp=current_start,
-                    end_timestamp=current_end,
-                    audio_segments=window_audio_segments,
-                    video_frames=window_video_frames,
-                    metadata={
-                        "chunk_type": "scene_based",
-                        "scene_index": i,
-                        "audio_segment_count": len(window_audio_segments),
-                        "video_frame_count": len(window_video_frames),
-                    }
+            all_timestamps.extend([f.timestamp for f in video_frames])
+
+        if not all_timestamps and video_duration is None:
+            raise ValueError(
+                "No audio, video, or video_duration provided - cannot synchronize contexts"
+            )
+
+        start_time = 0.0
+        end_time = float(video_duration) if video_duration is not None else 0.0
+        if all_timestamps:
+            end_time = max(end_time, max(all_timestamps))
+
+        if end_time <= 0:
+            raise ValueError("Invalid timeline end (duration or timestamps)")
+
+        logger.info(
+            "Synchronizing contexts: 5-minute time-based chunking from %.2fs to %.2fs (chunk_size=%.0fs)",
+            start_time,
+            end_time,
+            size,
+        )
+
+        # Build (scene_start, scene_end, keyframe) for scene-overlap assignment
+        scene_keyframes: List[Tuple[float, float, VideoFrame]] = []
+        if scene_boundaries is not None and video_duration is not None and video_frames:
+            scene_keyframes = self._build_scene_keyframe_list(
+                scene_boundaries, video_duration, video_frames
+            )
+            logger.debug(
+                "Built %d scene→keyframe mappings for overlap-based assignment",
+                len(scene_keyframes),
+            )
+
+        contexts: List[SynchronizedContext] = []
+        current_start = start_time
+
+        while current_start < end_time:
+            current_end = min(current_start + size, end_time)
+
+            window_audio = [
+                seg
+                for seg in audio_segments
+                if self._segment_overlaps_window(seg, current_start, current_end)
+            ]
+
+            if scene_keyframes:
+                window_frames = self._keyframes_for_overlapping_scenes(
+                    scene_keyframes, current_start, current_end
                 )
-                contexts.append(context)
-                logger.debug(f"Created scene-based context {i+1}: {current_start:.2f}s - {current_end:.2f}s "
-                           f"({len(window_audio_segments)} audio segments, "
-                           f"{len(window_video_frames)} video frames)")
-        else:
-            # Fallback to fixed chunk size (should not be used in production per project guidelines)
-            if chunk_size is None:
-                chunk_size = self.chunk_size
-            
-            logger.warning(f"No scene boundaries provided - using fixed chunk size {chunk_size}s "
-                          f"(not recommended per project guidelines)")
-            logger.info(f"Synchronizing contexts: {start_time:.2f}s to {end_time:.2f}s (chunk size: {chunk_size}s)")
-            
-            # Create time windows
-            contexts = []
-            current_start = start_time
-            
-            while current_start < end_time:
-                current_end = min(current_start + chunk_size, end_time)
-                
-                # Find audio segments in this window
-                window_audio_segments = [
-                    seg for seg in audio_segments
-                    if self._segment_overlaps_window(seg, current_start, current_end)
+            else:
+                # Include frames at chunk end for final chunk only (keyframe at end_time)
+                is_last = current_end >= end_time
+                window_frames = [
+                    f
+                    for f in video_frames
+                    if current_start <= f.timestamp < current_end
+                    or (is_last and current_start <= f.timestamp <= current_end)
                 ]
-                
-                # Find video frames in this window
-                window_video_frames = [
-                    frame for frame in video_frames
-                    if current_start <= frame.timestamp < current_end
-                ]
-                
-                # Only create context if there's data in the window
-                if window_audio_segments or window_video_frames:
-                    context = SynchronizedContext(
-                        start_timestamp=current_start,
-                        end_timestamp=current_end,
-                        audio_segments=window_audio_segments,
-                        video_frames=window_video_frames,
-                        metadata={
-                            "chunk_type": "fixed_size",
-                            "chunk_size": chunk_size,
-                            "audio_segment_count": len(window_audio_segments),
-                            "video_frame_count": len(window_video_frames),
-                        }
-                    )
-                    contexts.append(context)
-                    logger.debug(f"Created context: {current_start:.2f}s - {current_end:.2f}s "
-                               f"({len(window_audio_segments)} audio segments, "
-                               f"{len(window_video_frames)} video frames)")
-                
-                current_start = current_end
-        
-        logger.info(f"Created {len(contexts)} synchronized contexts")
+
+            ctx = SynchronizedContext(
+                start_timestamp=current_start,
+                end_timestamp=current_end,
+                audio_segments=window_audio,
+                video_frames=window_frames,
+                metadata={
+                    "chunk_type": "time_based",
+                    "chunk_size_seconds": size,
+                    "audio_segment_count": len(window_audio),
+                    "video_frame_count": len(window_frames),
+                },
+            )
+            contexts.append(ctx)
+            logger.debug(
+                "Chunk %.2fs–%.2fs: %d audio segments, %d keyframes",
+                current_start,
+                current_end,
+                len(window_audio),
+                len(window_frames),
+            )
+
+            current_start = current_end
+
+        logger.info("Created %d contiguous 5-minute chunks", len(contexts))
         return contexts
-    
+
+    def _build_scene_keyframe_list(
+        self,
+        scene_boundaries: List[float],
+        video_duration: float,
+        video_frames: List[VideoFrame],
+    ) -> List[Tuple[float, float, VideoFrame]]:
+        """Build (scene_start, scene_end, keyframe) for each scene.
+
+        Scenes are [0, b0), [b0, b1), ..., [b_{n-1}, video_duration].
+        Keyframes are extracted at b0, b1, ...; keyframe at b_i represents
+        the scene [b_i, b_{i+1}).
+        """
+        bounds = [0.0] + sorted(set(scene_boundaries)) + [float(video_duration)]
+        bounds = sorted(set(bounds))
+        tolerance = 0.01
+
+        def frame_at(t: float) -> Optional[VideoFrame]:
+            for f in video_frames:
+                if abs(f.timestamp - t) <= tolerance:
+                    return f
+            best = None
+            best_d = float("inf")
+            for f in video_frames:
+                d = abs(f.timestamp - t)
+                if d < best_d:
+                    best_d, best = d, f
+            return best
+
+        result: List[Tuple[float, float, VideoFrame]] = []
+        for i in range(1, len(bounds) - 1):
+            s_start, s_end = bounds[i], bounds[i + 1]
+            kf = frame_at(s_start)
+            if kf is not None:
+                result.append((s_start, s_end, kf))
+        return result
+
+    def _keyframes_for_overlapping_scenes(
+        self,
+        scene_keyframes: List[Tuple[float, float, VideoFrame]],
+        c_start: float,
+        c_end: float,
+    ) -> List[VideoFrame]:
+        """Return keyframes whose scene overlaps [c_start, c_end)."""
+        out: List[VideoFrame] = []
+        for s_start, s_end, kf in scene_keyframes:
+            if s_start < c_end and s_end > c_start:
+                out.append(kf)
+        return out
+
     def _segment_overlaps_window(
         self,
         segment: AudioSegment,
         window_start: float,
-        window_end: float
+        window_end: float,
     ) -> bool:
-        """Check if an audio segment overlaps with a time window.
-        
-        Args:
-            segment: AudioSegment to check.
-            window_start: Start of time window.
-            window_end: End of time window.
-            
-        Returns:
-            True if segment overlaps with window, False otherwise.
-        """
-        # Segment overlaps if it starts before window ends and ends after window starts
+        """True if segment overlaps [window_start, window_end)."""
         return segment.start_time < window_end and segment.end_time > window_start
-    
+
     def map_frame_to_segments(
         self,
         frame_timestamp: float,
         segments: List[AudioSegment],
-        tolerance: float = 1.0
+        tolerance: float = 1.0,
     ) -> List[AudioSegment]:
-        """Map a video frame timestamp to overlapping audio segments.
-        
-        Args:
-            frame_timestamp: Timestamp of video frame in seconds.
-            segments: List of AudioSegment objects to search.
-            tolerance: Time tolerance in seconds for matching (default: 1.0s).
-            
-        Returns:
-            List of AudioSegment objects that overlap with the frame timestamp.
-        """
-        matching_segments = [
-            seg for seg in segments
+        """Map a video frame timestamp to overlapping audio segments."""
+        return [
+            seg
+            for seg in segments
             if seg.start_time <= frame_timestamp <= seg.end_time
             or abs(seg.start_time - frame_timestamp) <= tolerance
             or abs(seg.end_time - frame_timestamp) <= tolerance
         ]
-        return matching_segments
-    
+
     def get_overlapping_segments(
         self,
         start_time: float,
         end_time: float,
-        segments: List[AudioSegment]
+        segments: List[AudioSegment],
     ) -> List[AudioSegment]:
-        """Get all audio segments that overlap with a time range.
-        
-        Args:
-            start_time: Start of time range.
-            end_time: End of time range.
-            segments: List of AudioSegment objects to search.
-            
-        Returns:
-            List of AudioSegment objects that overlap with the time range.
-        """
+        """Return segments overlapping [start_time, end_time)."""
         return [
-            seg for seg in segments
+            seg
+            for seg in segments
             if self._segment_overlaps_window(seg, start_time, end_time)
         ]

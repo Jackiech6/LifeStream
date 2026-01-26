@@ -18,9 +18,9 @@ output "sqs_queue_arn" {
   value       = aws_sqs_queue.video_processing.arn
 }
 
-output "lambda_role_arn" {
-  description = "ARN of the IAM role for Lambda processor"
-  value       = aws_iam_role.lambda_processor.arn
+output "dispatcher_role_arn" {
+  description = "ARN of the IAM role for dispatcher Lambda"
+  value       = aws_iam_role.dispatcher.arn
 }
 
 output "rds_endpoint" {
@@ -86,13 +86,18 @@ output "api_docs_url" {
   value       = "https://${aws_api_gateway_rest_api.api.id}.execute-api.${var.aws_region}.amazonaws.com/${var.environment}/docs"
 }
 
-# ECR Repository
+# ECR Repository (processor image used by ECS)
 output "ecr_repository_url" {
-  description = "ECR repository URL for Lambda processor image"
+  description = "ECR repository URL for processor image"
   value       = aws_ecr_repository.lambda_processor.repository_url
 }
 
-output "lambda_processor_function_name" {
-  description = "Lambda processor function name"
-  value       = aws_lambda_function.video_processor.function_name
+output "ecs_cluster_name" {
+  description = "ECS cluster name for processor tasks"
+  value       = aws_ecs_cluster.processor.name
+}
+
+output "dispatcher_function_name" {
+  description = "Dispatcher Lambda function name"
+  value       = aws_lambda_function.dispatcher.function_name
 }

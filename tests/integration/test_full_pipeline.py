@@ -109,11 +109,10 @@ class TestFullPipeline:
     
     def test_synchronization_edge_cases(self, synchronizer):
         """Test synchronization edge cases."""
-        # Test with empty inputs
-        contexts = synchronizer.synchronize_contexts([], [])
-        assert isinstance(contexts, list)
-        assert len(contexts) == 0  # Empty inputs should return empty list
-        
+        # Empty inputs (no timeline) raise
+        with pytest.raises(ValueError, match="No audio, video, or video_duration"):
+            synchronizer.synchronize_contexts([], [])
+
         # Test with audio only
         audio_segments = [
             AudioSegment(start_time=0.0, end_time=10.0, speaker_id="Speaker_01")
@@ -150,12 +149,12 @@ class TestFullPipeline:
             ]
         )
         
-        # Test prompt creation
+        # Test prompt creation (diarized transcript)
         prompt = summarizer._create_prompt(context)
         assert isinstance(prompt, str)
-        assert "Audio Transcript" in prompt
-        
-        # Test visual context
+        assert "Transcript" in prompt and "Speaker_01" in prompt
+
+        # Test visual context (scene-aware)
         visual_context = summarizer._get_visual_context(context)
         assert isinstance(visual_context, str)
         

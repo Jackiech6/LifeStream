@@ -57,10 +57,9 @@ class TestContextSynchronizer:
         assert all(isinstance(ctx, SynchronizedContext) for ctx in contexts)
     
     def test_synchronize_contexts_empty(self, synchronizer):
-        """Test synchronization with empty inputs."""
-        contexts = synchronizer.synchronize_contexts([], [])
-        assert isinstance(contexts, list)
-        assert len(contexts) == 0
+        """Test synchronization with empty inputs (no timeline)."""
+        with pytest.raises(ValueError, match="No audio, video, or video_duration"):
+            synchronizer.synchronize_contexts([], [])
     
     def test_synchronize_contexts_audio_only(self, synchronizer, sample_audio_segments):
         """Test synchronization with audio only."""

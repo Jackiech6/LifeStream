@@ -19,6 +19,8 @@ from src.messaging.sqs_service import SQSService, ProcessingJob, JobStatus
 from src.memory.index_builder import index_daily_summary
 from src.memory.store_factory import create_vector_store
 from src.memory.embeddings import OpenAIEmbeddingModel
+from src.utils.timing import stage_timing
+from src.utils.idempotency import is_processed, mark_processed
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -104,86 +106,115 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 def process_video_job(job: Any, settings: Settings) -> Dict[str, Any]:
     """Process a single video processing job.
 
-    Args:
-        job: ProcessingJob to process (Any to avoid circular import in type hint).
-        settings: Application settings.
-
-    Returns:
-        Dictionary with status code and result.
+    Idempotency: (s3_key, etag) processed at most once. Skip and return 200 if already done.
     """
     job.status = JobStatus.PROCESSING
     job.started_at = job.started_at or __import__("datetime").datetime.utcnow().isoformat()
-
     logger.info(f"Processing job {job.job_id}: {job.video_s3_key}")
 
-    # Use Lambda /tmp directory for temporary files
     temp_dir = Path("/tmp") / f"lifestream_{job.job_id}"
     temp_dir.mkdir(parents=True, exist_ok=True)
+    timings: Dict[str, int] = {}
+    bucket = job.video_s3_bucket or (settings.aws_s3_bucket_name or "")
 
     try:
-        # Initialize services
         s3_service = S3Service(settings)
-        # Lazy import SQSService to avoid circular import issues
         from src.messaging.sqs_service import SQSService
         sqs_service = SQSService(settings)
 
-        # Download video from S3
-        local_video_path = temp_dir / Path(job.video_s3_key).name
-        logger.info(f"Downloading video from S3: s3://{job.video_s3_bucket}/{job.video_s3_key}")
-        s3_service.download_file(job.video_s3_key, local_video_path)
+        # Get ETag for idempotency (HeadObject)
+        meta = s3_service.get_file_metadata(job.video_s3_key, bucket=bucket)
+        etag = (meta or {}).get("etag") or ""
+        if not etag:
+            logger.warning("No ETag for %s; idempotency check skipped", job.video_s3_key)
 
-        # Process video using existing pipeline
+        if is_processed(job.video_s3_key, etag, settings):
+            logger.info("Idempotent skip: already processed s3_key=%s etag=%s", job.video_s3_key, etag[:32] if etag else "")
+            return {
+                "statusCode": 200,
+                "job_id": job.job_id,
+                "status": "skipped_idempotent",
+                "skipped_idempotent": True,
+            }
+
+        # Download
+        local_video_path = temp_dir / Path(job.video_s3_key).name
+        with stage_timing("download", timings):
+            s3_service.download_file(job.video_s3_key, str(local_video_path), bucket=bucket)
+        try:
+            size_bytes = local_video_path.stat().st_size
+        except OSError:
+            size_bytes = None
+        client_dur = (job.metadata or {}).get("client_duration_seconds")
+        size_str = f"{size_bytes} bytes" if size_bytes is not None else "N/A"
+        logger.info(
+            "Downloaded job_id=%s s3_key=%s local_size=%s path=%s%s",
+            job.job_id, job.video_s3_key, size_str, local_video_path,
+            f" client_duration_seconds={client_dur}" if client_dur is not None else ""
+        )
+
+        # Process pipeline (audio_extraction, diarization, asr, scene_detection, keyframes, sync, summarization)
         logger.info(f"Processing video: {local_video_path}")
         daily_summary = process_video_from_s3(
-            s3_bucket=job.video_s3_bucket,
+            s3_bucket=bucket,
             s3_key=job.video_s3_key,
             local_video_path=str(local_video_path),
             settings=settings,
             temp_dir=str(temp_dir),
+            timings=timings,
         )
+
+        server_dur = getattr(
+            getattr(daily_summary, "video_metadata", None), "duration", None
+        )
+        if client_dur is not None and server_dur is not None:
+            try:
+                cd, sd = float(client_dur), float(server_dur)
+                diff = abs(cd - sd) / max(sd, 1e-6)
+                if diff > 0.2:
+                    logger.warning(
+                        "Duration mismatch: client=%.1fs, server=%.1fs (diff=%.0f%%). "
+                        "Possible wrong file or format vs stream duration mismatch.",
+                        cd, sd, diff * 100
+                    )
+            except (TypeError, ValueError):
+                pass
 
         # Upload results to S3
         result_key = f"results/{job.job_id}/summary.json"
-        logger.info(f"Uploading results to S3: {result_key}")
-
-        # Serialize summary to JSON
-        summary_json = daily_summary.model_dump_json(indent=2)
-        summary_path = temp_dir / "summary.json"
-        summary_path.write_text(summary_json, encoding="utf-8")
-
-        # Upload JSON summary
-        s3_service.upload_file(
-            summary_path,
-            result_key,
-            metadata={"job_id": job.job_id, "video_key": job.video_s3_key},
-        )
-
-        # Also upload Markdown summary
-        from src.processing.summarization import LLMSummarizer
-
-        summarizer = LLMSummarizer(settings)
-        markdown = summarizer.format_markdown_output(daily_summary)
-        markdown_path = temp_dir / "summary.md"
-        markdown_path.write_text(markdown, encoding="utf-8")
-
         markdown_key = f"results/{job.job_id}/summary.md"
-        s3_service.upload_file(markdown_path, markdown_key)
+        with stage_timing("upload", timings):
+            summary_json = daily_summary.model_dump_json(indent=2)
+            summary_path = temp_dir / "summary.json"
+            summary_path.write_text(summary_json, encoding="utf-8")
+            s3_service.upload_file(
+                summary_path,
+                result_key,
+                metadata={"job_id": job.job_id, "video_key": job.video_s3_key},
+            )
+            from src.processing.summarization import LLMSummarizer
+            summarizer = LLMSummarizer(settings)
+            markdown = summarizer.format_markdown_output(daily_summary)
+            markdown_path = temp_dir / "summary.md"
+            markdown_path.write_text(markdown, encoding="utf-8")
+            s3_service.upload_file(markdown_path, markdown_key)
 
-        # Index summary into vector store (Stage 2)
-        logger.info("Indexing summary into vector store")
-        try:
-            store = create_vector_store(settings)
-            embedder = OpenAIEmbeddingModel(settings)
-            index_daily_summary(daily_summary, store, embedder)
-            logger.info("Summary indexed successfully")
-        except Exception as e:
-            logger.warning(f"Failed to index summary (non-fatal): {e}")
+        with stage_timing("indexing", timings):
+            try:
+                store = create_vector_store(settings)
+                embedder = OpenAIEmbeddingModel(settings)
+                index_daily_summary(daily_summary, store, embedder)
+                logger.info("Summary indexed successfully")
+            except Exception as e:
+                logger.warning(f"Failed to index summary (non-fatal): {e}")
 
-        # Update job status
+        mark_processed(job.video_s3_key, etag, result_s3_key=result_key, settings=settings)
+
         job.status = JobStatus.COMPLETED
         job.completed_at = __import__("datetime").datetime.utcnow().isoformat()
         job.result_s3_key = result_key
 
+        logger.info("stage_timings %s", timings)
         logger.info(f"Job {job.job_id} completed successfully")
 
         return {
@@ -192,6 +223,7 @@ def process_video_job(job: Any, settings: Settings) -> Dict[str, Any]:
             "status": job.status.value,
             "result_s3_key": result_key,
             "markdown_s3_key": markdown_key,
+            "stage_timings": timings,
         }
 
     except Exception as e:
@@ -266,44 +298,26 @@ def process_video_from_s3(
     local_video_path: str,
     settings: Optional[Settings] = None,
     temp_dir: Optional[str] = None,
+    timings: Optional[Dict[str, int]] = None,
 ) -> Any:  # Returns DailySummary
     """Process a video downloaded from S3.
 
-    This is a wrapper around the main process_video function that:
-    1. Uses S3 paths for metadata
-    2. Configures temp directory for Lambda
-    3. Handles S3-specific paths
-
-    Args:
-        s3_bucket: S3 bucket name.
-        s3_key: S3 object key (path).
-        local_video_path: Local path to downloaded video file.
-        settings: Application settings.
-        temp_dir: Temporary directory for processing (defaults to /tmp).
-
-    Returns:
-        DailySummary object.
+    Uses S3 paths for metadata, configures temp directory, passes timings to process_video.
     """
     if settings is None:
         settings = Settings()
-
-    # Override temp_dir for Lambda
     if temp_dir:
         settings.temp_dir = temp_dir
-    elif not hasattr(settings, "temp_dir") or not settings.temp_dir:
+    elif not getattr(settings, "temp_dir", None):
         settings.temp_dir = "/tmp"
 
-    # Process video using existing pipeline
-    # Note: process_video expects local file path, which we have
     daily_summary = process_video(
         video_path=local_video_path,
         settings=settings,
         verbose=False,
+        timings=timings,
     )
-
-    # Update video_source to S3 path
     daily_summary.video_source = f"s3://{s3_bucket}/{s3_key}"
-
     return daily_summary
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import json
 
-from src.ingestion.media_processor import MediaProcessor
+from src.ingestion.media_processor import MediaProcessor, _is_url
 from src.models.data_models import VideoMetadata, VideoFrame
 from config.settings import Settings
 
@@ -45,6 +45,13 @@ class TestMediaProcessor:
     def test_validate_video_format_nonexistent(self, processor):
         """Test format validation with non-existent file."""
         assert processor.validate_video_format("/nonexistent/file.mp4") is False
+
+    def test_is_url_and_validate_url(self, processor):
+        """Test URL detection and that URLs are accepted for streaming pipeline."""
+        assert _is_url("https://bucket.s3.region.amazonaws.com/key?X-Amz-") is True
+        assert _is_url("http://example.com/v.mp4") is True
+        assert _is_url("/local/path/video.mp4") is False
+        assert processor.validate_video_format("https://example.com/video.mp4") is True
     
     @patch('src.ingestion.media_processor.subprocess.run')
     def test_get_video_metadata(self, mock_run, processor, mock_video_file):

@@ -1,0 +1,71 @@
+# ECS Fargate processor container. Entrypoint: ecs_processor.
+# Build: docker build --build-arg HF_TOKEN=<token> -f Dockerfile.processor.ecs -t processor-ecs .
+# HF_TOKEN required to bake pyannote models at build time. No Hugging Face or Whisper downloads at runtime.
+
+FROM python:3.11-slim-bookworm
+
+ARG HF_TOKEN
+ENV PATH="/usr/local/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
+
+# System deps: ffmpeg, libsndfile, build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make curl xz-utils libsndfile1 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -U pip setuptools wheel && \
+    pip install --no-cache-dir "numpy>=1.26.4,<2" && \
+    pip install --no-cache-dir \
+    "pydantic==2.5.3" "pydantic-settings==2.1.0" "python-dotenv==1.0.0" "boto3==1.34.0" \
+    "numpy>=1.26.4,<2" "scipy==1.11.4" "Pillow==10.2.0" "click==8.1.7" "tqdm==4.66.1" && \
+    pip install --no-cache-dir "httpx>=0.24,<0.28" "openai==1.12.0" "pinecone==5.0.1" && \
+    pip install --no-cache-dir "opencv-python-headless==4.9.0.80" "soundfile>=0.12.1" && \
+    (pip install --no-cache-dir "librosa>=0.10.0" --no-deps && pip install --no-cache-dir "audioread" "numba" "packaging" || pip install --no-cache-dir "librosa>=0.10.0") && \
+    pip install --no-cache-dir "scenedetect==0.6.2" && \
+    pip install --no-cache-dir "torch==2.1.2" "torchaudio==2.1.2" --index-url https://download.pytorch.org/whl/cpu
+
+RUN pip install --no-cache-dir "huggingface-hub>=0.16.4,<0.20" && \
+    pip install --no-cache-dir \
+    "einops" "pytorch-lightning>=2.0,<3" "rich" "semver" "tensorboardX" "lazy_loader" && \
+    pip install --no-cache-dir "matplotlib" "cycler" "fonttools" "kiwisolver" "pyparsing" && \
+    pip install --no-cache-dir "pytorch-metric-learning" "scikit-learn" "asteroid-filterbanks" && \
+    pip install --no-cache-dir "pyannote.audio==3.1.1" "pyannote.pipeline" "pyannote.database" "pyannote.core" "pyannote.metrics" "optuna" "torch-audiomentations" "pandas" "pyYAML" && \
+    pip install --no-cache-dir "tiktoken" "faster-whisper>=1.0.0" && \
+    (pip install --no-cache-dir "openai-whisper==20231117" || pip install --no-cache-dir "openai-whisper==20231117" --no-deps) && \
+    pip install --no-cache-dir "httpx>=0.24,<0.28" "numpy>=1.26.4,<2" && \
+    pip install --no-cache-dir "huggingface-hub>=0.16.4,<0.20"
+
+# Bake Whisper and Hugging Face models at build time. Runtime uses /opt/models only; no downloads.
+RUN mkdir -p /opt/models/whisper /opt/models/huggingface/hub
+
+# Pin numpy>=1.26,<2 (scipy needs .exceptions; pyannote needs np.NaN, removed in 2.0). Re-pin before bake.
+RUN pip install --no-cache-dir "numpy>=1.26.4,<2" && python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__"
+
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', download_root='/opt/models/whisper'); print('baked whisper')"
+
+# Pyannote: requires HF_TOKEN build-arg. Download all HF models to /opt/models/huggingface.
+ARG HF_TOKEN
+RUN if [ -n "${HF_TOKEN}" ]; then \
+    export HF_HOME=/opt/models/huggingface && \
+    export HF_HUB_CACHE=/opt/models/huggingface/hub && \
+    export HF_TOKEN="${HF_TOKEN}" && \
+    export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}" && \
+    python -c "from pyannote.audio import Pipeline; Pipeline.from_pretrained('pyannote/speaker-diarization-3.1'); print('baked pyannote')"; \
+else \
+    echo "ERROR: HF_TOKEN build-arg required to bake pyannote. Set --build-arg HF_TOKEN=..."; exit 1; \
+fi
+
+# Runtime: use baked models only; no HF or Whisper downloads.
+ENV WHISPER_CACHE_DIR=/opt/models/whisper \
+    HF_HOME=/opt/models/huggingface \
+    HF_HUB_CACHE=/opt/models/huggingface/hub \
+    HF_HUB_OFFLINE=1
+
+COPY src/ /app/src/
+COPY config/ /app/config/
+
+CMD ["python", "-m", "src.workers.ecs_processor"]

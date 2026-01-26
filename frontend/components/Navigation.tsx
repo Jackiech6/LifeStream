@@ -13,24 +13,24 @@ export default function Navigation() {
   ];
 
   return (
-    <nav className="bg-white border-b border-gray-200 shadow-sm">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between h-16">
-          <div className="flex">
+    <nav className="bg-white/80 backdrop-blur-md border-b border-gray-200/80 shadow-sm sticky top-0 z-10">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex justify-between h-14">
+          <div className="flex items-center gap-8">
             <Link href="/" className="flex items-center">
-              <span className="text-2xl font-bold text-primary-600">LifeStream</span>
+              <span className="text-xl font-bold bg-gradient-to-r from-primary-700 to-primary-500 bg-clip-text text-transparent">LifeStream</span>
             </Link>
-            <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
+            <div className="hidden sm:flex sm:gap-1">
               {navItems.map((item) => {
                 const isActive = pathname === item.href;
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
-                    className={`inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium ${
+                    className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                       isActive
-                        ? 'border-primary-500 text-gray-900'
-                        : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                        ? 'bg-primary-100 text-primary-800'
+                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                     }`}
                   >
                     {item.label}
@@ -43,18 +43,16 @@ export default function Navigation() {
       </div>
 
       {/* Mobile menu */}
-      <div className="sm:hidden">
-        <div className="pt-2 pb-3 space-y-1">
+      <div className="sm:hidden border-t border-gray-100">
+        <div className="py-2 space-y-0.5 px-2">
           {navItems.map((item) => {
             const isActive = pathname === item.href;
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`block pl-3 pr-4 py-2 border-l-4 text-base font-medium ${
-                  isActive
-                    ? 'bg-primary-50 border-primary-500 text-primary-700'
-                    : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
+                className={`block px-4 py-3 rounded-lg text-base font-medium ${
+                  isActive ? 'bg-primary-100 text-primary-800' : 'text-gray-600 hover:bg-gray-50'
                 }`}
               >
                 {item.label}

@@ -51,13 +51,16 @@ def test_s3_service_missing_bucket_name():
 
 def test_upload_file_success(settings_with_bucket, mock_s3_client):
     """upload_file should successfully upload a file."""
-    # Create a temporary test file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
         tmp.write(b"test video content")
         tmp_path = tmp.name
 
     try:
-        mock_s3_client.head_object.return_value = {"ETag": '"abc123"'}
+        file_size = 18
+        mock_s3_client.head_object.return_value = {
+            "ETag": '"abc123"',
+            "ContentLength": file_size,
+        }
         service = S3Service(settings_with_bucket)
 
         result = service.upload_file(tmp_path, "uploads/test.mp4")
@@ -69,10 +72,8 @@ def test_upload_file_success(settings_with_bucket, mock_s3_client):
         assert result.etag == "abc123"
         assert result.error is None
 
-        # Verify upload_file was called
-        mock_s3_client.upload_file.assert_called_once()
-        call_args = mock_s3_client.upload_file.call_args
-        assert call_args[0][0] == tmp_path
+        mock_s3_client.upload_fileobj.assert_called_once()
+        call_args = mock_s3_client.upload_fileobj.call_args
         assert call_args[0][1] == "test-bucket"
         assert call_args[0][2] == "uploads/test.mp4"
 
@@ -97,7 +98,7 @@ def test_upload_file_failure(settings_with_bucket, mock_s3_client):
     try:
         from botocore.exceptions import ClientError
 
-        mock_s3_client.upload_file.side_effect = ClientError(
+        mock_s3_client.upload_fileobj.side_effect = ClientError(
             {"Error": {"Code": "AccessDenied"}}, "UploadObject"
         )
 

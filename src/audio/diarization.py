@@ -80,44 +80,42 @@ class SpeakerDiarizer:
                     "dependencies not fully installed or are being mocked."
                 )
             
-            # Check for HuggingFace token
-            if not self.settings.huggingface_token:
+            # ECS: image bakes models in /opt/models/huggingface and sets HF_HOME, HF_HUB_CACHE, HF_HUB_OFFLINE=1.
+            # Do NOT overwrite HF_HOME/HF_HUB_CACHE here, or the loader will look in /tmp (empty) and fail.
+            # Lambda: no baked cache; use /tmp and token for download.
+            use_offline = os.environ.get('HF_HUB_OFFLINE') == '1'
+            hf_home_set = bool(os.environ.get('HF_HOME'))
+
+            if not use_offline and not self.settings.huggingface_token:
                 raise ValueError(
-                    "HuggingFace token required for diarization. "
-                    "Set HUGGINGFACE_TOKEN in .env file"
+                    "HuggingFace token required for diarization when not using offline cache. "
+                    "Set HUGGINGFACE_TOKEN in .env or bake models in image with HF_HUB_OFFLINE=1."
                 )
-            
-            logger.info(f"Loading diarization model: {self.settings.diarization_model}")
-            
-            # Load pipeline with authentication
-            # pyannote.audio 3.1.1 doesn't accept token/use_auth_token parameters directly
-            # Instead, we need to set the token via environment variable or huggingface_hub login
-            # Set HF_TOKEN environment variable for huggingface_hub to use
-            import os
+
+            logger.info(
+                "Loading diarization model: %s (offline=%s, HF_HOME=%s)",
+                self.settings.diarization_model,
+                use_offline,
+                os.environ.get('HF_HOME', '(unset)'),
+            )
+
             original_token = os.environ.get('HF_TOKEN')
             original_hf_home = os.environ.get('HF_HOME')
             original_hf_hub_cache = os.environ.get('HF_HUB_CACHE')
             try:
-                # Set token in environment for huggingface_hub
-                os.environ['HF_TOKEN'] = self.settings.huggingface_token
-                
-                # Also try HUGGING_FACE_HUB_TOKEN (alternative env var name)
-                os.environ['HUGGING_FACE_HUB_TOKEN'] = self.settings.huggingface_token
-                
-                # Set cache directory to /tmp for Lambda (read-only file system except /tmp)
-                # This prevents OSError: [Errno 30] Read-only file system: '/home/sbx_user1051'
-                os.environ['HF_HOME'] = '/tmp/huggingface'
-                os.environ['HF_HUB_CACHE'] = '/tmp/huggingface/hub'
-                
-                # Ensure cache directory exists
-                os.makedirs('/tmp/huggingface/hub', exist_ok=True)
-                
-                # Load pipeline without token parameter (uses environment variable)
+                if self.settings.huggingface_token:
+                    os.environ['HF_TOKEN'] = self.settings.huggingface_token
+                    os.environ['HUGGING_FACE_HUB_TOKEN'] = self.settings.huggingface_token
+                # Only point to /tmp when HF_HOME is not already set (e.g. Lambda); ECS sets /opt/models/...
+                if not hf_home_set:
+                    os.environ['HF_HOME'] = '/tmp/huggingface'
+                    os.environ['HF_HUB_CACHE'] = '/tmp/huggingface/hub'
+                    os.makedirs('/tmp/huggingface/hub', exist_ok=True)
+
                 self.pipeline = Pipeline.from_pretrained(
                     self.settings.diarization_model
                 )
             finally:
-                # Restore original environment variables if they existed
                 if original_token is not None:
                     os.environ['HF_TOKEN'] = original_token
                 elif 'HF_TOKEN' in os.environ:
@@ -126,11 +124,11 @@ class SpeakerDiarizer:
                     del os.environ['HUGGING_FACE_HUB_TOKEN']
                 if original_hf_home is not None:
                     os.environ['HF_HOME'] = original_hf_home
-                elif 'HF_HOME' in os.environ:
+                elif 'HF_HOME' in os.environ and not hf_home_set:
                     del os.environ['HF_HOME']
                 if original_hf_hub_cache is not None:
                     os.environ['HF_HUB_CACHE'] = original_hf_hub_cache
-                elif 'HF_HUB_CACHE' in os.environ:
+                elif 'HF_HUB_CACHE' in os.environ and not hf_home_set:
                     del os.environ['HF_HUB_CACHE']
             
             # Move to GPU if available, otherwise CPU
@@ -208,9 +206,9 @@ class SpeakerDiarizer:
                 # Run diarization pipeline with audio dict
                 diarization_output = self.pipeline(audio_dict)
                 
-            except ImportError:
-                # Fallback to file path if librosa is not available
-                logger.warning("librosa not available, using file path (may fail with torchcodec issues)")
+            except Exception as e:
+                # Fallback to file path if librosa fails (ImportError, numba issues, etc.)
+                logger.warning("librosa path failed (%s), using file path (may fail with torchcodec issues): %s", type(e).__name__, e)
                 diarization_output = self.pipeline(audio_path)
             
             # Handle pyannote.audio 3.1 output format (DiarizeOutput object)

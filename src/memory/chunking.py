@@ -109,8 +109,14 @@ def _build_summary_text(block: TimeBlock) -> str:
     ]
     if block.location:
         lines.append(f"Location: {block.location}")
-    if block.transcript_summary:
+    if block.per_speaker_summary:
+        lines.append("Per-speaker summary:")
+        for sid, s in block.per_speaker_summary.items():
+            lines.append(f"  {sid}: {s}")
+    elif block.transcript_summary:
         lines.append(f"Summary: {block.transcript_summary}")
+    if block.visual_summary:
+        lines.append(f"Visual: {block.visual_summary}")
     if block.action_items:
         lines.append("Action items:")
         for item in block.action_items:

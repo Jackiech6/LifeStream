@@ -10,65 +10,59 @@ client = TestClient(app)
 
 
 def test_upload_large_file_rejected():
-    """Large files should be rejected."""
-    # Test with a file that's too large (simulate 2GB+ file)
-    # We'll test with actual limit checking in the endpoint
-    with patch("src.api.routes.upload.VideoService") as mock_service:
-        # The endpoint checks file size before creating service
-        # Create a file that's just under the limit to test validation
-        large_content = b"x" * (2 * 1024 * 1024 * 1024)  # Exactly 2GB
-        
-        # This will fail at size validation before service is created
-        response = client.post(
-            "/api/v1/upload",
-            files={"file": ("large.mp4", large_content[:1024], "video/mp4")}  # Send small chunk for test
-        )
-        # May fail with 500 if service creation fails, or 400 if validation catches it
-        assert response.status_code in [400, 413, 500]  # Accept various error codes
+    """Presigned-url should reject file_size over limit."""
+    response = client.post(
+        "/api/v1/upload/presigned-url",
+        json={"filename": "large.mp4", "file_size": 3 * 1024 * 1024 * 1024},
+    )
+    assert response.status_code == 400
+    assert "large" in response.json()["detail"].lower() or "2" in response.json()["detail"]
 
 
 def test_upload_invalid_file_type():
     """Invalid file types should be rejected."""
     response = client.post(
-        "/api/v1/upload",
-        files={"file": ("test.txt", b"not a video", "text/plain")}
+        "/api/v1/upload/presigned-url",
+        json={"filename": "test.txt"},
     )
     assert response.status_code == 400
     assert "Invalid file type" in response.json()["detail"]
 
 
 def test_upload_empty_file():
-    """Empty files should be rejected."""
-    response = client.post(
-        "/api/v1/upload",
-        files={"file": ("empty.mp4", b"", "video/mp4")}
-    )
+    """Confirm should reject when S3 file is empty."""
+    with patch("src.api.routes.presigned_upload.S3Service") as mock_s3:
+        mock_s3.return_value.file_exists.return_value = True
+        mock_s3.return_value.get_file_metadata.return_value = {"size": 0}
+        with patch("src.api.routes.presigned_upload.VideoService"):
+            response = client.post(
+                "/api/v1/upload/confirm",
+                json={"job_id": "j1", "s3_key": "uploads/empty.mp4"},
+            )
     assert response.status_code == 400
     assert "empty" in response.json()["detail"].lower()
 
 
 def test_status_nonexistent_job():
-    """Status endpoint should handle nonexistent jobs gracefully."""
-    with patch("src.api.routes.status.S3Service") as mock_s3:
-        mock_service = MagicMock()
-        mock_service.file_exists.return_value = False
-        mock_s3.return_value = mock_service
-        
-        response = client.get("/api/v1/status/nonexistent-job-id")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "queued"  # Returns queued status, not error
+    """Status returns 404 when job not in DynamoDB."""
+    with patch("src.api.routes.status.get_job") as mock_get:
+        mock_get.return_value = None
+        with patch("src.api.routes.status.Settings") as mock_s:
+            mock_s.return_value.jobs_table_name = "test-jobs"
+            mock_s.return_value.aws_region = "us-east-1"
+            response = client.get("/api/v1/status/nonexistent-job-id")
+    assert response.status_code == 404
 
 
 def test_summary_nonexistent_job():
-    """Summary endpoint should return 404 for nonexistent jobs."""
-    with patch("src.api.routes.summary.S3Service") as mock_s3:
-        mock_service = MagicMock()
-        mock_service.file_exists.return_value = False
-        mock_s3.return_value = mock_service
-        
-        response = client.get("/api/v1/summary/nonexistent-job-id")
-        assert response.status_code == 404
+    """Summary returns 404 when job not in DynamoDB."""
+    with patch("src.api.routes.summary.get_job") as mock_get:
+        mock_get.return_value = None
+        with patch("src.api.routes.summary.Settings") as mock_s:
+            mock_s.return_value.jobs_table_name = "test-jobs"
+            mock_s.return_value.aws_region = "us-east-1"
+            response = client.get("/api/v1/summary/nonexistent-job-id")
+    assert response.status_code == 404
 
 
 def test_query_empty_string():

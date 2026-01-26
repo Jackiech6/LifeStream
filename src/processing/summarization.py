@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 
 from src.models.data_models import SynchronizedContext, TimeBlock, DailySummary
+from src.utils.openai_retry import with_429_retry
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -81,110 +82,103 @@ class LLMSummarizer:
                 "Set OPENAI_API_KEY in .env file."
             )
         
-        prompt = self._create_prompt(context)
-        visual_context = self._get_visual_context(context)
         has_audio = bool(context.audio_segments)
         has_visual = bool(context.video_frames)
 
-        # Check if context has data - with mandatory features, this should not happen
+        # Empty 5-minute window (no speech, no overlapping keyframes): create minimal block
         if not has_audio and not has_visual:
-            logger.error("Context has no audio or video data - this indicates a processing error")
-            raise ValueError(
-                "Context has no audio or video data. "
-                "This should not happen with mandatory diarization, ASR, and scene detection features."
+            logger.info(
+                "Context %.2fs–%.2fs has no audio or keyframes; creating minimal time block",
+                context.start_timestamp,
+                context.end_timestamp,
             )
+            return self._create_default_timeblock(context)
+
+        prompt = self._create_prompt(context)
+        visual_context = self._get_visual_context(context)
 
         # Get meeting context
         is_meeting = context.metadata.get('is_meeting')
         context_type = context.metadata.get('context_type', 'unknown')
         
-        # Call LLM
-        try:
-            logger.info(f"Summarizing context: {context.start_timestamp:.2f}s - {context.end_timestamp:.2f}s "
-                       f"(type: {context_type})")
-            
-            response = self.client.chat.completions.create(
+        # Call LLM with 429 retry
+        logger.info(f"Summarizing context: {context.start_timestamp:.2f}s - {context.end_timestamp:.2f}s "
+                   f"(type: {context_type})")
+        messages = [
+            {"role": "system", "content": self._get_system_prompt(is_meeting=is_meeting)},
+            {"role": "user", "content": prompt + "\n\nVisual Context:\n" + visual_context},
+        ]
+
+        def _create():
+            return self.client.chat.completions.create(
                 model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self._get_system_prompt(is_meeting=is_meeting)
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt + "\n\nVisual Context:\n" + visual_context
-                    }
-                ],
+                messages=messages,
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
             )
-            
+
+        try:
+            response = with_429_retry(_create, max_retries=5, log=logger)
             summary_text = response.choices[0].message.content
-            
-            # Parse response into TimeBlock
             time_block = self._parse_llm_response(summary_text, context)
-            
             logger.info(f"Summarization complete: {time_block.activity}")
             return time_block
-            
         except Exception as e:
             logger.error(f"Summarization failed: {e}")
-            # LLM summarization is mandatory - raise error instead of fallback
             raise RuntimeError(
                 f"LLM summarization failed (mandatory feature): {e}. "
                 "Ensure OpenAI API key is configured and API is accessible."
             ) from e
     
     def _get_system_prompt(self, is_meeting: Optional[bool] = None) -> str:
-        """Get the system prompt for LLM.
-        
-        Args:
-            is_meeting: True if this is a meeting context, False if non-meeting, None if unknown.
-        """
-        base_prompt = """You are a diary summarization system. Given audio transcripts and visual context, 
-generate a structured daily log entry in Markdown format.
+        """Get the system prompt for LLM (Stage 1/2: per-speaker, scene-aware, action items)."""
+        base_prompt = """You are a diary summarization system. For each 5-minute chunk you receive:
+1) Diarized transcript (speech merged with deterministic speaker IDs)
+2) Scene-aware visual context (significant scene changes overlapping the chunk)
 
-Required format:
+Produce a structured Markdown entry with these sections. Use EXACT headers and bullets.
+
 ## [START_TIME] - [END_TIME]: [Activity Title]
-* **Location:** [inferred from visuals]
-* **Activity:** [brief description]
+* **Location:** [inferred from visuals, or "Unknown"]
+* **Activity:** [specific description, never the word "Activity"]
 * **Source Reliability:** [High/Medium/Low]
 * **Participants:**
   * **Speaker_01:** [name if known, else "Speaker_01"]
-* **Transcript Summary:** [concise summary]
-* **Action Items:**
-  * [ ] [item description]
+  (list each speaker present in the transcript)
 
-Be concise and factual. Infer locations from visual context when possible.
-CRITICAL: Never use the generic word "Activity" as the Activity Title or **Activity:** value.
-- If there is speech: summarize what was discussed (e.g. "Team standup", "Code review discussion").
-- If there is no speech: use "No speech detected" and briefly describe any visual context (e.g. "Silent footage: screen recording").
-- Always extract a specific, descriptive activity from the transcript or visuals."""
-        
+* **Per-Speaker Summary:**
+  * **Speaker_01:** [Concise summary of what this speaker said during the time window. Attribute content clearly.]
+  * **Speaker_02:** [Same for each speaker. Explicitly list speakers and their contributions.]
+
+* **Visual Summary:** [Describe dominant activities or environmental changes suggested by scene changes. Do NOT list raw frame-level details. Only significant scene changes should influence this. If no relevant scenes: "No significant visual changes in this window."]
+
+* **Action Items:**
+  * [ ] **Speaker_01:** [item]   (attribute to responsible speaker when possible)
+  * [ ] [item]   (use unattributed if no clear owner)
+
+RULES:
+- Use deterministic speaker IDs from the transcript (Speaker_01, Speaker_02, etc.). Never invent speakers.
+- Per-Speaker Summary: exactly one bullet per speaker, concise summary of their contributions in this window.
+- Visual Summary: scene-aware only; dominant activities/env changes, not frame filenames or timestamps.
+- Action Items: infer from transcript; attribute to speaker whenever possible. Use "**Speaker_XX:** item" format."""
         if is_meeting is True:
             base_prompt += """
 
-CONTEXT: This is a MEETING. Focus on:
-- Meeting agenda, topics discussed, decisions made
-- Action items and next steps
-- Participant contributions and questions
-- Key outcomes and follow-ups"""
+CONTEXT: MEETING. Emphasize agenda, decisions, action items, and explicit per-speaker contributions."""
         elif is_meeting is False:
             base_prompt += """
 
-CONTEXT: This is a NON-MEETING setting (e.g., lecture, tutorial, solo work, casual conversation).
-Focus on:
-- Main topics or content covered
-- Educational or informational content
-- Key points or takeaways
-- Less emphasis on action items unless explicitly mentioned"""
-        
+CONTEXT: NON-MEETING (lecture, tutorial, solo). Focus on content covered; fewer action items unless explicit."""
         return base_prompt
     
     def _create_prompt(self, context: SynchronizedContext) -> str:
-        """Create the prompt for LLM summarization."""
-        lines = ["Audio Transcript:"]
-        
+        """Create the prompt for LLM: diarized transcript (deterministic speaker IDs)."""
+        lines = [
+            "Diarized transcript for this 5-minute chunk (speech merged with deterministic speaker diarization).",
+            "Provide a per-speaker summary and attribute action items to speakers when possible.",
+            "",
+            "Transcript:",
+        ]
         if context.audio_segments:
             for seg in context.audio_segments:
                 start_str = self._format_timestamp(seg.start_time)
@@ -192,22 +186,23 @@ Focus on:
                 transcript = (seg.transcript_text or "").strip() or "[no transcript]"
                 lines.append(f"[{seg.speaker_id}] ({start_str}-{end_str}): {transcript}")
         else:
-            lines.append("[No audio segments in this time window — no speech detected]")
-        
+            lines.append("[No speech in this time window]")
         return "\n".join(lines)
-    
+
     def _get_visual_context(self, context: SynchronizedContext) -> str:
-        """Get visual context description from video frames."""
+        """Scene-aware visual context: significant scene changes overlapping the chunk.
+
+        Describe dominant activities or environmental changes; no raw frame-level details.
+        """
         if not context.video_frames:
-            return "[No video frames in this time window]"
-        
-        lines = []
-        for frame in context.video_frames:
-            timestamp_str = self._format_timestamp(frame.timestamp)
-            scene_info = "Scene change detected" if frame.scene_change_detected else "Keyframe"
-            lines.append(f"* {timestamp_str}: {scene_info} (frame: {Path(frame.frame_path).name})")
-        
-        return "\n".join(lines)
+            return "No scene changes overlap this 5-minute chunk. Use 'No significant visual changes in this window.' in Visual Summary if appropriate."
+        timestamps = sorted({f.timestamp for f in context.video_frames})
+        ts_str = ", ".join(self._format_timestamp(t) for t in timestamps)
+        return (
+            f"Significant scene changes at: {ts_str}. "
+            "Summarize dominant activities or environmental changes implied by these scene boundaries. "
+            "Do NOT list frame filenames or raw frame-level details."
+        )
     
     def _format_timestamp(self, seconds: float) -> str:
         """Format timestamp in seconds to HH:MM:SS format."""
@@ -233,24 +228,24 @@ Focus on:
         return combined[: max_chars].rsplit(maxsplit=1)[0].strip() + "…"
 
     def _parse_llm_response(self, response_text: str, context: SynchronizedContext) -> TimeBlock:
-        """Parse LLM response into TimeBlock."""
+        """Parse LLM response into TimeBlock (per-speaker, visual summary, action items)."""
         from src.models.data_models import Participant
+        import re
 
         start_time_str = self._format_time_string(context.start_timestamp)
         end_time_str = self._format_time_string(context.end_timestamp)
 
-        # Extract activity: try ## title first, then **Activity:** line
+        # Activity (## START - END: Activity; use last colon to avoid splitting timestamps)
         activity: Optional[str] = None
         if "##" in response_text:
             first = response_text.split("##")[1].split("\n")[0].strip()
             if ":" in first:
-                activity = first.split(":", 1)[-1].strip()
+                activity = first.rsplit(":", 1)[-1].strip()
         if (not activity or activity.lower() == "activity") and "**Activity:**" in response_text:
             for line in response_text.split("\n"):
                 if "**Activity:**" in line:
                     activity = line.split("**Activity:**", 1)[-1].strip()
                     break
-        # Reject generic "Activity"; use transcript fallback when available
         if not activity or activity.strip().lower() == "activity":
             activity = self._activity_from_transcript(context)
         if not activity:
@@ -264,30 +259,55 @@ Focus on:
                     location = line.split("**Location:**", 1)[-1].strip()
                     break
 
-        # Transcript summary: allow same-line or following lines
-        transcript_summary = None
-        if "**Transcript Summary:**" in response_text:
+        # Per-Speaker Summary: **Speaker_01:** ... per line (stop at next section)
+        per_speaker_summary: Dict[str, str] = {}
+        transcript_summary: Optional[str] = None
+        if "**Per-Speaker Summary:**" in response_text:
+            in_block = False
+            for line in response_text.split("\n"):
+                if "**Per-Speaker Summary:**" in line:
+                    in_block = True
+                    continue
+                if "**Visual Summary:**" in line or "**Action Items:**" in line:
+                    in_block = False
+                if not in_block:
+                    continue
+                if line.strip().startswith("*") and "**" in line:
+                    m = re.search(r"\*\*([^*]+):\*\*\s*(.*)", line.strip())
+                    if m:
+                        sid, summary = m.group(1).strip(), m.group(2).strip()
+                        if sid and (sid.startswith("Speaker") or "Speaker" in sid):
+                            per_speaker_summary[sid] = summary
+                elif line.strip() and not line.strip().startswith("*"):
+                    break
+        if not per_speaker_summary and "**Transcript Summary:**" in response_text:
             for line in response_text.split("\n"):
                 if "**Transcript Summary:**" in line:
-                    rest = line.split("**Transcript Summary:**", 1)[-1].strip()
-                    if rest:
-                        transcript_summary = rest
-                        break
-            if not transcript_summary:
-                in_summary = False
-                summary_lines = []
-                for line in response_text.split("\n"):
-                    if "**Transcript Summary:**" in line:
-                        in_summary = True
-                        continue
-                    if in_summary and line.strip() and not line.strip().startswith("*"):
-                        summary_lines.append(line.strip())
-                    elif in_summary and line.strip().startswith("*"):
-                        break
-                if summary_lines:
-                    transcript_summary = " ".join(summary_lines)
+                    transcript_summary = line.split("**Transcript Summary:**", 1)[-1].strip()
+                    break
 
-        # Participants: use real_name=speaker_id so we don't show "unknown: unknown"
+        # Visual Summary
+        visual_summary = None
+        if "**Visual Summary:**" in response_text:
+            for line in response_text.split("\n"):
+                if "**Visual Summary:**" in line:
+                    visual_summary = line.split("**Visual Summary:**", 1)[-1].strip()
+                    break
+            if not visual_summary:
+                in_block = False
+                vs_lines = []
+                for line in response_text.split("\n"):
+                    if "**Visual Summary:**" in line:
+                        in_block = True
+                        continue
+                    if in_block and line.strip() and not line.strip().startswith("*"):
+                        vs_lines.append(line.strip())
+                    elif in_block and line.strip().startswith("*"):
+                        break
+                if vs_lines:
+                    visual_summary = " ".join(vs_lines)
+
+        # Participants
         participants = []
         if context.audio_segments:
             speaker_ids = list(set(seg.speaker_id for seg in context.audio_segments))
@@ -295,19 +315,19 @@ Focus on:
                 name = speaker_id if speaker_id not in ("unknown", "Speaker_Unknown") else "Unidentified speaker"
                 participants.append(Participant(speaker_id=speaker_id, real_name=name))
 
-        # Action items
-        action_items = []
+        # Action items (allow "**Speaker_XX:** item" or "item")
+        action_items: List[str] = []
         if "**Action Items:**" in response_text:
-            in_action_items = False
+            in_block = False
             for line in response_text.split("\n"):
                 if "**Action Items:**" in line:
-                    in_action_items = True
+                    in_block = True
                     continue
-                if in_action_items and line.strip().startswith("*"):
-                    item = line.strip().lstrip("*").strip().lstrip("[ ]").strip()
-                    if item:
-                        action_items.append(item)
-                elif in_action_items and line.strip() and not line.strip().startswith("*"):
+                if in_block and line.strip().startswith("*"):
+                    raw = line.strip().lstrip("*").strip().lstrip("[ ]").strip()
+                    if raw:
+                        action_items.append(raw)
+                elif in_block and line.strip() and not line.strip().startswith("*"):
                     break
 
         source_reliability = "Medium"
@@ -316,9 +336,8 @@ Focus on:
         elif len(context.audio_segments) < 2 or len(context.video_frames) < 1:
             source_reliability = "Low"
 
-        # Get meeting context from metadata
-        context_type = context.metadata.get('context_type')
-        is_meeting = context.metadata.get('is_meeting')
+        context_type = context.metadata.get("context_type")
+        is_meeting = context.metadata.get("is_meeting")
 
         return TimeBlock(
             start_time=start_time_str,
@@ -330,6 +349,8 @@ Focus on:
             is_meeting=is_meeting,
             participants=participants,
             transcript_summary=transcript_summary,
+            per_speaker_summary=per_speaker_summary,
+            visual_summary=visual_summary,
             action_items=action_items,
             audio_segments=context.audio_segments,
             video_frames=context.video_frames,
@@ -373,6 +394,8 @@ Focus on:
             context_type=context_type,
             is_meeting=is_meeting,
             participants=participants,
+            per_speaker_summary={},
+            visual_summary=None,
             audio_segments=context.audio_segments,
             video_frames=context.video_frames,
         )
@@ -407,7 +430,7 @@ Focus on:
         if date is None:
             date = datetime.now().strftime("%Y-%m-%d")
         
-        # Summarize each context
+        # Summarize each context (exactly one ChatGPT call per 5‑min chunk)
         time_blocks = []
         for context in contexts:
             try:
@@ -415,7 +438,6 @@ Focus on:
                 time_blocks.append(time_block)
             except Exception as e:
                 logger.error(f"Failed to summarize context {context.start_timestamp:.2f}s: {e}")
-                # Create default timeblock on failure
                 time_block = self._create_default_timeblock(context)
                 time_blocks.append(time_block)
         

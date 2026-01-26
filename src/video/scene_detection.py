@@ -7,7 +7,6 @@ in video files and extracting keyframes at scene boundaries.
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
-import subprocess
 
 from src.models.data_models import VideoFrame, VideoMetadata
 from config.settings import Settings
@@ -30,7 +29,7 @@ class SceneDetector:
     def _check_dependencies(self) -> None:
         """Check if required dependencies are available."""
         try:
-            from scenedetect import VideoManager, SceneManager
+            from scenedetect import open_video, SceneManager
             from scenedetect.detectors import ContentDetector
             import cv2
             logger.info("Scene detection dependencies available")
@@ -39,74 +38,59 @@ class SceneDetector:
                 f"Required dependencies not installed: {e}. "
                 "Install with: pip install scenedetect opencv-python"
             )
-    
+
     def detect_scene_changes(
         self,
         video_path: str,
-        threshold: Optional[float] = None
+        threshold: Optional[float] = None,
+        frame_skip: Optional[int] = None,
     ) -> List[float]:
         """Detect scene changes in video file.
-        
-        Uses PySceneDetect to identify scene boundaries based on visual changes.
-        
-        Args:
-            video_path: Path to the video file.
-            threshold: Scene detection threshold (0.0-1.0). If None, uses settings default.
-            
-        Returns:
-            List of timestamps (in seconds) where scene changes occur.
-            
-        Raises:
-            ValueError: If video file cannot be processed.
+
+        Uses PySceneDetect (open_video + SceneManager) to identify scene boundaries.
+        frame_skip: 0=none, 1=every 2nd frame, 2=every 3rd, etc. Reduces runtime.
         """
         if not Path(video_path).exists():
             raise ValueError(f"Video file does not exist: {video_path}")
-        
+
         if threshold is None:
             threshold = self.settings.scene_detection_threshold
-        
+        if frame_skip is None:
+            frame_skip = getattr(
+                self.settings, "scene_detection_frame_skip", 0
+            )
+
         try:
-            from scenedetect import VideoManager, SceneManager
+            from scenedetect import open_video, SceneManager
             from scenedetect.detectors import ContentDetector
-            
-            logger.info(f"Detecting scene changes in: {video_path} (threshold={threshold})")
-            
-            # Create video manager and scene manager
-            video_manager = VideoManager([video_path])
-            scene_manager = SceneManager()
-            
-            # Add content detector (detects changes in video content)
-            scene_manager.add_detector(ContentDetector(threshold=threshold))
-            
-            # Start video manager
-            video_manager.set_duration()
-            video_manager.start()
-            
-            # Detect scenes
-            scene_manager.detect_scenes(frame_source=video_manager)
-            
-            # Get scene list
-            scene_list = scene_manager.get_scene_list()
-            
-            # Extract timestamps (start times of each scene, skip first scene at 0.0)
+
+            logger.info(
+                "Detecting scene changes in: %s (threshold=%s, frame_skip=%s)",
+                video_path, threshold, frame_skip
+            )
+
+            video = open_video(video_path)
+            try:
+                scene_manager = SceneManager()
+                scene_manager.add_detector(ContentDetector(threshold=threshold))
+                scene_manager.detect_scenes(video, frame_skip=frame_skip)
+                scene_list = scene_manager.get_scene_list()
+            finally:
+                if hasattr(video, "close"):
+                    video.close()
+
             timestamps = []
             for start_time, end_time in scene_list:
-                # Convert from Timecode to seconds
                 start_seconds = start_time.get_seconds()
-                if start_seconds > 0:  # Skip first scene start at 0.0
+                if start_seconds > 0:
                     timestamps.append(start_seconds)
-            
+
             logger.info(f"Detected {len(timestamps)} scene changes")
-            
             return sorted(timestamps)
-            
+
         except Exception as e:
             logger.error(f"Scene detection failed: {e}")
             raise ValueError(f"Could not detect scene changes: {video_path}") from e
-        finally:
-            # Cleanup
-            if 'video_manager' in locals():
-                video_manager.release()
     
     def extract_keyframes(
         self,

@@ -188,12 +188,14 @@ class S3Service:
         self,
         s3_key: str,
         local_path: str | Path,
+        bucket: Optional[str] = None,
     ) -> bool:
         """Download a file from S3.
 
         Args:
             s3_key: S3 object key to download.
             local_path: Local path to save the file.
+            bucket: Optional bucket override; uses default when None.
 
         Returns:
             True if download succeeded, False otherwise.
@@ -203,20 +205,25 @@ class S3Service:
         """
         local_path = Path(local_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
+        b = bucket or self._bucket_name
 
-        logger.info(f"Downloading s3://{self._bucket_name}/{s3_key} to {local_path}")
+        logger.info(f"Downloading s3://{b}/{s3_key} to {local_path}")
 
         try:
-            self.client.download_file(
-                self._bucket_name,
-                s3_key,
-                str(local_path),
-            )
+            from boto3.s3.transfer import TransferConfig
 
+            transfer_config = TransferConfig(
+                multipart_threshold=8 * 1024 * 1024,  # 8 MB
+                max_concurrency=16,
+                multipart_chunksize=8 * 1024 * 1024,  # 8 MB per part
+                use_threads=True,
+            )
+            self.client.download_file(
+                b, s3_key, str(local_path), Config=transfer_config
+            )
             file_size = local_path.stat().st_size
             logger.info(f"Successfully downloaded {s3_key} ({file_size} bytes)")
             return True
-
         except Exception as e:
             logger.error(f"Failed to download {s3_key}: {e}")
             raise RuntimeError(f"S3 download failed: {e}") from e
@@ -295,21 +302,26 @@ class S3Service:
         except Exception:
             return False
 
-    def get_file_metadata(self, s3_key: str) -> Optional[Dict[str, Any]]:
-        """Get metadata for an S3 object.
+    def get_file_metadata(
+        self, s3_key: str, bucket: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get metadata for an S3 object (HeadObject). Includes etag for idempotency.
 
         Args:
             s3_key: S3 object key.
+            bucket: Optional bucket override; uses default when None.
 
         Returns:
-            Dictionary with metadata (size, last_modified, etag, etc.) or None if not found.
+            Dictionary with size, last_modified, etag, etc., or None if not found.
         """
+        b = bucket or self._bucket_name
         try:
-            response = self.client.head_object(Bucket=self._bucket_name, Key=s3_key)
+            response = self.client.head_object(Bucket=b, Key=s3_key)
+            raw_etag = response.get("ETag") or ""
             return {
                 "size": response.get("ContentLength"),
                 "last_modified": response.get("LastModified"),
-                "etag": response.get("ETag", "").strip('"'),
+                "etag": raw_etag.strip('"') if isinstance(raw_etag, str) else str(raw_etag),
                 "content_type": response.get("ContentType"),
                 "metadata": response.get("Metadata", {}),
             }

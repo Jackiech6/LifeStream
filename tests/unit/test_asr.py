@@ -20,8 +20,8 @@ class TestASRProcessor:
     
     @pytest.fixture
     def settings(self):
-        """Create settings."""
-        return Settings()
+        """Create settings (use_faster_whisper=False so whisper mock is used)."""
+        return Settings(use_faster_whisper=False)
     
     @pytest.fixture
     def mock_audio_file(self, tmp_path):
@@ -110,5 +110,7 @@ class TestASRProcessor:
             
             merged = processor.merge_asr_diarization(asr_output, [])
             
-            # Should return empty list
-            assert merged == []
+            # No diarization: return ASR-only segments with speaker "unknown"
+            assert len(merged) == 1
+            assert merged[0].transcript_text == "Hello"
+            assert merged[0].speaker_id == "unknown"

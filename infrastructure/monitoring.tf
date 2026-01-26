@@ -18,9 +18,9 @@ resource "aws_cloudwatch_metric_alarm" "lambda_api_throttles" {
   }
 }
 
-# Processor Lambda errors
-resource "aws_cloudwatch_metric_alarm" "lambda_processor_errors" {
-  alarm_name          = "${var.project_name}-lambda-processor-errors-${var.environment}"
+# Dispatcher Lambda errors
+resource "aws_cloudwatch_metric_alarm" "dispatcher_errors" {
+  alarm_name          = "${var.project_name}-dispatcher-errors-${var.environment}"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
   metric_name         = "Errors"
@@ -28,47 +28,11 @@ resource "aws_cloudwatch_metric_alarm" "lambda_processor_errors" {
   period              = 300
   statistic           = "Sum"
   threshold           = 1
-  alarm_description   = "Processor Lambda errors detected"
+  alarm_description   = "Dispatcher Lambda errors detected"
   alarm_actions       = var.notification_email != "" && var.enable_billing_alerts ? [aws_sns_topic.billing_alerts[0].arn] : []
 
   dimensions = {
-    FunctionName = aws_lambda_function.video_processor.function_name
-  }
-}
-
-# Processor Lambda throttles
-resource "aws_cloudwatch_metric_alarm" "lambda_processor_throttles" {
-  alarm_name          = "${var.project_name}-lambda-processor-throttles-${var.environment}"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "Throttles"
-  namespace           = "AWS/Lambda"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 0
-  alarm_description   = "Processor Lambda is being throttled"
-  alarm_actions       = var.notification_email != "" && var.enable_billing_alerts ? [aws_sns_topic.billing_alerts[0].arn] : []
-
-  dimensions = {
-    FunctionName = aws_lambda_function.video_processor.function_name
-  }
-}
-
-# Processor Lambda duration (p95 near timeout)
-resource "aws_cloudwatch_metric_alarm" "lambda_processor_duration_p95" {
-  alarm_name          = "${var.project_name}-lambda-processor-duration-p95-${var.environment}"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "Duration"
-  namespace           = "AWS/Lambda"
-  period              = 300
-  extended_statistic  = "p95"
-  threshold           = var.lambda_timeout * 900  # 90% of timeout in ms
-  alarm_description   = "Processor Lambda p95 duration is close to timeout"
-  alarm_actions       = var.notification_email != "" && var.enable_billing_alerts ? [aws_sns_topic.billing_alerts[0].arn] : []
-
-  dimensions = {
-    FunctionName = aws_lambda_function.video_processor.function_name
+    FunctionName = aws_lambda_function.dispatcher.function_name
   }
 }
 

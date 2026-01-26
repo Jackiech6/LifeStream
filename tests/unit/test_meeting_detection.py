@@ -1,7 +1,7 @@
 """Unit tests for meeting detection."""
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 from src.models.data_models import SynchronizedContext, AudioSegment, VideoFrame
 from src.processing.meeting_detection import MeetingDetector, ContextType
@@ -77,33 +77,20 @@ class TestMeetingDetector:
         assert context_type == ContextType.NON_MEETING
     
     def test_detect_context_type_heuristic(self, settings, mock_context_meeting):
-        """Test detect_context_type uses heuristics when LLM unavailable."""
+        """Test detect_context_type uses heuristics only (no LLM)."""
         detector = MeetingDetector(settings)
-        detector.client = None  # No LLM
-        
         context_type = detector.detect_context_type(mock_context_meeting)
         assert context_type in [ContextType.MEETING, ContextType.NON_MEETING, ContextType.UNKNOWN]
-    
-    def test_detect_context_type_llm(self, settings, mock_context_meeting):
-        """Test detect_context_type uses LLM when available."""
-        # Mock OpenAI client directly
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "MEETING"
-        mock_client.chat.completions.create.return_value = mock_response
-        
+
+    def test_detect_context_type_meeting_via_heuristics(self, settings, mock_context_meeting):
+        """Test detect_context_type returns MEETING for meeting-like context (heuristics)."""
         detector = MeetingDetector(settings)
-        detector.client = mock_client  # Inject mock client
-        
         context_type = detector.detect_context_type(mock_context_meeting)
         assert context_type == ContextType.MEETING
-    
+
     def test_get_context_metadata(self, settings, mock_context_meeting):
         """Test get_context_metadata returns correct structure."""
         detector = MeetingDetector(settings)
-        detector.client = None  # Use heuristics
-        
         metadata = detector.get_context_metadata(mock_context_meeting)
         
         assert "context_type" in metadata
